@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GrammarSystem } from './grammar.js';
-import { MockLLM } from './mock_llm.js';
+import { LLM } from './llm.js';
 import { CreatureRenderer } from './renderer.js';
 
 class App {
@@ -87,21 +87,39 @@ class App {
         });
     }
 
-    generateCreature() {
+    async generateCreature() {
         // Collect Genes
         const checkboxes = document.querySelectorAll('#gene-list input:checked');
         const selectedGenes = Array.from(checkboxes).map(cb => cb.value);
         console.log("Selected Genes:", selectedGenes);
 
-        // 1. Mock LLM generates grammar rules based on genes
-        const rules = MockLLM.generateGrammar(selectedGenes);
+        // Show loading state
+        console.log("Requesting LLM generation...");
+        const btn = document.getElementById('generate-btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.innerText = "Generating...";
+        }
 
-        // 2. Grammar System expands the rules into a structure tree
-        this.grammarSystem.setRules(rules);
-        const structureTree = this.grammarSystem.expand('root');
+        try {
+            // 1. LLM generates grammar rules based on genes
+            const rules = await LLM.generateGrammar(selectedGenes);
+            console.log("Grammar received:", rules);
 
-        // 3. Renderer constructs the 3D representation
-        this.creatureRenderer.render(structureTree);
+            // 2. Grammar System expands the rules into a structure tree
+            this.grammarSystem.setRules(rules);
+            const structureTree = this.grammarSystem.expand('root');
+
+            // 3. Renderer constructs the 3D representation
+            this.creatureRenderer.render(structureTree);
+        } catch (e) {
+            console.error("Generation failed:", e);
+        } finally {
+             if (btn) {
+                btn.disabled = false;
+                btn.innerText = "Generate Creature";
+            }
+        }
     }
 }
 
