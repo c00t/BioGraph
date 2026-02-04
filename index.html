@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BioGraph: LLM Creature Generator</title>
+    <link rel="stylesheet" href="style.css">
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+    <div id="ui-container">
+        <h1>BioGraph</h1>
+        <div class="controls">
+            <h3>Genes</h3>
+            <div id="gene-list">
+                <!-- Genes will be injected here via JS -->
+                <label><input type="checkbox" value="long_neck"> Long Neck</label>
+                <label><input type="checkbox" value="wings"> Wings</label>
+                <label><input type="checkbox" value="multi_legs"> Multi Legs</label>
+                <label><input type="checkbox" value="laser_eyes"> Laser Eyes</label>
+                <label><input type="checkbox" value="big_head"> Big Head</label>
+                <label><input type="checkbox" value="spikes"> Spikes</label>
+            </div>
+            <button id="generate-btn">Generate Creature</button>
+        </div>
+        <div class="instructions">
+            <p>Select genes and click Generate to simulate LLM-driven biological construction.</p>
+        </div>
+    </div>
+    <div id="canvas-container"></div>
+
+    <script type="module" src="src/main.js"></script>
+</body>
+</html>
