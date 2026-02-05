@@ -5,12 +5,14 @@ export const LLM = {
         console.log("LLM generating grammar for:", genes);
 
         const systemPrompt = `You are a bio-engineer AI. Your task is to generate a hierarchical 3D structure for an organic creature based on a list of active genes.
-The creature will be rendered using Raymarching SDFs (Signed Distance Functions), allowing for smooth blending between parts.
+The creature will be rendered using Raymarching SDFs (Signed Distance Functions), allowing for smooth blending between parts, like metaballs.
+
+You are not just assembling rigid parts; you are SCULPTING organic matter. You have full control over the shape, size, color, and blending of each part.
 
 The output must be a valid JSON object representing the grammar rules.
 
 Structure:
-- The JSON object keys are symbols (strings).
+- The JSON object keys are symbols (strings) (e.g., "torso", "arm_segment", "eye").
 - The values are arrays of instruction objects.
 - Each instruction object describes a child part attached to the parent symbol.
 - Instruction fields:
@@ -18,21 +20,30 @@ Structure:
   - "pos": [x, y, z] (Array of 3 numbers) Position relative to parent.
   - "rot": [x, y, z] (Array of 3 numbers) Rotation in degrees. (Optional, default [0,0,0])
   - "scl": [x, y, z] (Array of 3 numbers) Scale. (Optional, default [1,1,1])
-  - "params": {} (Object) Optional parameters.
+  - "params": {} (Object) Visual parameters for this part.
 
-Supported Symbols (Mapped to SDF Primitives):
-- Core: "root", "torso" (Rounded Box), "head" (Sphere/Ellipsoid), "neck" (Capsule chain)
-- Limbs: "arm", "forearm", "hand", "leg", "calf", "foot" (Capsules/Rounded Boxes)
-- Extras: "wing" (Thin Rounded Box), "spike" (Cone/Pyramid), "eye_laser" (Cylinder)
+"params" Object Fields (Crucial for the Look):
+  - "shape": (string) "sphere", "box", "capsule", "cylinder".
+  - "size": [x, y, z] (Array of 3 numbers) The dimensions of the shape.
+    - sphere: [radius, 0, 0] (Use x for radius)
+    - box: [half_width, half_height, half_depth]
+    - capsule: [radius, height, 0] (x is radius, y is height)
+    - cylinder: [radius, height, 0] (x is radius, y is height)
+  - "color": [r, g, b] (Array of 3 floats, 0.0 - 1.0).
+  - "blend": (float, 0.0 - 1.0) How much this shape blends with its parent and neighbors.
+    - 0.0 = Rigid connection (sharp seams).
+    - 0.3 - 0.5 = Organic muscle/skin blending.
+    - 0.8+ = Very blobby/liquid.
 
-Requirements:
-1. The "root" symbol must be defined and typically contains the "torso".
-2. Create a complete hierarchical structure (e.g., torso -> arm -> forearm -> hand).
-3. **Organic Flow:** Use overlapping shapes and positions that flow naturally into each other. The renderer will automatically blend them. Avoid gaps between joints.
-4. Incorporate the requested GENES into the design.
-5. If "multi_legs" is present, add more legs.
-6. If "long_neck" is present, use multiple "neck" segments.
-7. Return ONLY the JSON object. Do not wrap it in markdown code blocks.
+Design Guidelines:
+1. **Metaball Creature:** Use "sphere" and "capsule" with high "blend" values (0.3 - 0.6) to create fleshy, organic forms that flow into each other.
+2. **Hierarchy:** The "root" usually contains the "torso". Build limbs (arms, legs) as chains of segments.
+3. **Hard Parts:** Use "box" or "cylinder" with low "blend" (0.0 - 0.1) for beaks, claws, horns, or armor plates.
+4. **Genes:** Incorporate the requested GENES.
+   - "multi_legs": Add more leg chains.
+   - "long_neck": Add a chain of neck segments.
+   - "spikes": Add sharp, low-blend cones (capsules with variable size or just small capsules) or boxes.
+5. Return ONLY the JSON object. Do not wrap it in markdown code blocks.
 `;
 
         const userPrompt = `Genes: ${JSON.stringify(genes)}`;

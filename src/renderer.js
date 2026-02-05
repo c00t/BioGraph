@@ -122,8 +122,8 @@ vec2 map(vec3 p) {
             matID = float(i);
         } else {
             // Smooth min
-            // float k = s.blend;
-            float k = 0.4; // Global blend factor for organic look
+            float k = max(0.001, s.blend); // Use shape blend
+            // float k = 0.4; // Global blend factor for organic look
             d = smin(d, dist, k);
 
             // For color blending, we can't easily do it here without more complex logic.
@@ -357,55 +357,80 @@ export class CreatureRenderer {
         let color = new THREE.Vector3(0.2, 0.8, 0.5); // Greenish
         let blend = 0.4;
 
+        // 1. Determine base properties from Symbol Name (Legacy/Fallback)
         if (s.includes("torso")) {
             type = 1; // Box
-            size.set(0.5 * scale.x, 0.5 * scale.y, 0.5 * scale.z);
+            size.set(0.5, 0.5, 0.5);
             color.set(0.3, 0.7, 0.6);
         }
         else if (s.includes("head")) {
             type = 0; // Sphere
-            size.x = 0.6 * scale.x; // Radius
+            size.set(0.6, 0.0, 0.0);
             color.set(0.3, 0.7, 0.6);
         }
         else if (s.includes("neck")) {
             type = 2; // Capsule
-            size.x = 0.2 * scale.x; // Radius
-            size.y = 0.6 * scale.y; // Height
+            size.set(0.2, 0.6, 0.0);
             color.set(0.2, 0.6, 0.5);
         }
         else if (s.includes("arm") || s.includes("leg") || s.includes("forearm") || s.includes("calf")) {
             type = 2; // Capsule
-            size.x = 0.15 * scale.x; // Radius
-            size.y = 0.8 * scale.y;  // Height
+            size.set(0.15, 0.8, 0.0);
             color.set(0.2, 0.6, 0.5);
         }
         else if (s.includes("hand") || s.includes("foot")) {
             type = 1; // Box
-            size.set(0.2 * scale.x, 0.2 * scale.y, 0.2 * scale.z);
+            size.set(0.2, 0.2, 0.2);
             color.set(0.1, 0.5, 0.4);
         }
         else if (s.includes("wing")) {
             type = 1; // Box (Thin)
-            size.set(0.8 * scale.x, 0.05 * scale.y, 1.2 * scale.z);
+            size.set(0.8, 0.05, 1.2);
             color.set(0.9, 0.9, 0.2);
         }
         else if (s.includes("spike")) {
-            type = 2; // Capsule (Pointy look via geometry?) - Just use small capsule
-            size.x = 0.05 * scale.x;
-            size.y = 0.6 * scale.y;
+            type = 2; // Capsule (Pointy look via geometry?)
+            size.set(0.05, 0.6, 0.0);
             color.set(0.8, 0.8, 0.8);
         }
         else if (s.includes("eye") || s.includes("laser")) {
             type = 3; // Cylinder
-            size.x = 0.05 * scale.x;
-            size.y = 1.0 * scale.y;
+            size.set(0.05, 1.0, 0.0);
             color.set(1.0, 0.0, 0.0);
         }
         else {
             if (s === "root") return null;
             // Default Sphere
             type = 0;
-            size.x = 0.2 * scale.x;
+            size.set(0.2, 0.0, 0.0);
+        }
+
+        // Apply Scale to the Base Size derived from symbol
+        size.multiply(scale);
+
+        // 2. Override with Params if present
+        if (params) {
+            if (params.shape) {
+                const shp = params.shape.toLowerCase();
+                if (shp === "box") type = 1;
+                else if (shp === "capsule") type = 2;
+                else if (shp === "cylinder") type = 3;
+                else type = 0; // sphere
+            }
+
+            if (params.size && Array.isArray(params.size) && params.size.length === 3) {
+                 // params.size is the base size.
+                 size.set(params.size[0], params.size[1], params.size[2]);
+                 size.multiply(scale);
+            }
+
+            if (params.color && Array.isArray(params.color) && params.color.length === 3) {
+                color.set(params.color[0], params.color[1], params.color[2]);
+            }
+
+            if (typeof params.blend === 'number') {
+                blend = params.blend;
+            }
         }
 
         return { type, size, color, blend };
