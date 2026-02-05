@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GrammarSystem } from './grammar.js';
 import { LLM } from './llm.js';
 import { CreatureRenderer } from './renderer.js';
+import { GENE_LIST } from './genes.js';
 
 class App {
     constructor() {
@@ -20,8 +21,23 @@ class App {
         this.animate();
         this.setupUI();
 
+        // Populate with random genes on startup
+        this.populateRandomGenes();
+
         // Generate a default creature on startup
         this.generateCreature();
+    }
+
+    populateRandomGenes() {
+        // Pick 8-16 random genes
+        const count = Math.floor(Math.random() * (16 - 8 + 1)) + 8;
+        const shuffled = [...GENE_LIST].sort(() => 0.5 - Math.random());
+        const selected = shuffled.slice(0, count);
+
+        const input = document.getElementById('gene-input');
+        if (input) {
+            input.value = selected.join(', ');
+        }
     }
 
     init() {
@@ -85,15 +101,28 @@ class App {
     }
 
     setupUI() {
-        document.getElementById('generate-btn').addEventListener('click', () => {
-            this.generateCreature();
-        });
+        const generateBtn = document.getElementById('generate-btn');
+        if (generateBtn) {
+            generateBtn.addEventListener('click', () => {
+                this.generateCreature();
+            });
+        }
+
+        const randomizeBtn = document.getElementById('randomize-btn');
+        if (randomizeBtn) {
+            randomizeBtn.addEventListener('click', () => {
+                this.populateRandomGenes();
+            });
+        }
     }
 
     async generateCreature() {
         // Collect Genes
-        const checkboxes = document.querySelectorAll('#gene-list input:checked');
-        const selectedGenes = Array.from(checkboxes).map(cb => cb.value);
+        const input = document.getElementById('gene-input');
+        const geneString = input ? input.value : "";
+        // Split by comma, trim whitespace, and remove empty entries
+        const selectedGenes = geneString.split(',').map(s => s.trim()).filter(s => s.length > 0);
+
         console.log("Selected Genes:", selectedGenes);
 
         // Show loading state

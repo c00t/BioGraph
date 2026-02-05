@@ -13,7 +13,7 @@ body {
     background: rgba(0, 0, 0, 0.8);
     padding: 20px;
     border-radius: 8px;
-    width: 250px;
+    width: 280px; /* Slightly wider */
     z-index: 100;
 }
 
@@ -28,22 +28,33 @@ h1 {
     padding-bottom: 5px;
 }
 
-#gene-list {
+#gene-container {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 10px;
     margin-bottom: 15px;
 }
 
-label {
-    cursor: pointer;
+textarea#gene-input {
+    width: 100%;
+    background: #333;
+    color: #eee;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 8px;
+    font-family: inherit;
+    font-size: 0.9em;
+    resize: vertical;
+    box-sizing: border-box; /* Ensure padding doesn't overflow width */
+}
+
+.button-row {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    gap: 10px;
 }
 
 button {
-    width: 100%;
+    flex: 1; /* Distribute space */
     padding: 10px;
     background-color: #4db6ac;
     border: none;
@@ -52,10 +63,24 @@ button {
     font-weight: bold;
     cursor: pointer;
     transition: background 0.2s;
+    font-size: 0.9em;
+}
+
+button#randomize-btn {
+    background-color: #5c6bc0;
+}
+
+button#randomize-btn:hover {
+    background-color: #3949ab;
 }
 
 button:hover {
     background-color: #26a69a;
+}
+
+button:disabled {
+    background-color: #555;
+    cursor: not-allowed;
 }
 
 .instructions {
