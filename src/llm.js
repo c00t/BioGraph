@@ -74,6 +74,8 @@ Design Guidelines:
             const data = await response.json();
             const content = data.choices[0].message.content;
 
+            console.log("LLM Raw Response Content:", content);
+
             // Simple cleanup to handle potential markdown code blocks
             let jsonString = content.trim();
             if (jsonString.startsWith("```json")) {
