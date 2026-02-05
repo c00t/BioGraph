@@ -19,19 +19,16 @@
         <h1>BioGraph</h1>
         <div class="controls">
             <h3>Genes</h3>
-            <div id="gene-list">
-                <!-- Genes will be injected here via JS -->
-                <label><input type="checkbox" value="long_neck"> Long Neck</label>
-                <label><input type="checkbox" value="wings"> Wings</label>
-                <label><input type="checkbox" value="multi_legs"> Multi Legs</label>
-                <label><input type="checkbox" value="laser_eyes"> Laser Eyes</label>
-                <label><input type="checkbox" value="big_head"> Big Head</label>
-                <label><input type="checkbox" value="spikes"> Spikes</label>
+            <div id="gene-container">
+                <textarea id="gene-input" rows="4" placeholder="e.g. wings, claws, red_skin..."></textarea>
+                <div class="button-row">
+                    <button id="randomize-btn">Randomize Genes</button>
+                    <button id="generate-btn">Generate Creature</button>
+                </div>
             </div>
-            <button id="generate-btn">Generate Creature</button>
         </div>
         <div class="instructions">
-            <p>Select genes and click Generate to simulate LLM-driven biological construction.</p>
+            <p>Edit genes (comma separated) or randomize, then click Generate.</p>
         </div>
     </div>
     <div id="canvas-container"></div>
