@@ -78,6 +78,9 @@ class App {
     animate() {
         requestAnimationFrame(() => this.animate());
         this.controls.update();
+        if (this.creatureRenderer) {
+            this.creatureRenderer.update(this.camera);
+        }
         this.renderer.render(this.scene, this.camera);
     }
 

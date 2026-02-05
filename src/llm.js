@@ -4,7 +4,9 @@ export const LLM = {
     generateGrammar: async function(genes) {
         console.log("LLM generating grammar for:", genes);
 
-        const systemPrompt = `You are a bio-engineer AI. Your task is to generate a 3D creature grammar in JSON format based on a list of active genes.
+        const systemPrompt = `You are a bio-engineer AI. Your task is to generate a hierarchical 3D structure for an organic creature based on a list of active genes.
+The creature will be rendered using Raymarching SDFs (Signed Distance Functions), allowing for smooth blending between parts.
+
 The output must be a valid JSON object representing the grammar rules.
 
 Structure:
@@ -18,18 +20,19 @@ Structure:
   - "scl": [x, y, z] (Array of 3 numbers) Scale. (Optional, default [1,1,1])
   - "params": {} (Object) Optional parameters.
 
-Supported Symbols:
-- Core: "root", "torso", "head", "neck", "neck_segment"
-- Limbs: "arm", "forearm", "hand", "leg", "calf", "foot"
-- Extras: "wing", "wing_tip", "spike", "eye_laser"
+Supported Symbols (Mapped to SDF Primitives):
+- Core: "root", "torso" (Rounded Box), "head" (Sphere/Ellipsoid), "neck" (Capsule chain)
+- Limbs: "arm", "forearm", "hand", "leg", "calf", "foot" (Capsules/Rounded Boxes)
+- Extras: "wing" (Thin Rounded Box), "spike" (Cone/Pyramid), "eye_laser" (Cylinder)
 
 Requirements:
-1. The "root" symbol must be defined and usually contains the "torso".
+1. The "root" symbol must be defined and typically contains the "torso".
 2. Create a complete hierarchical structure (e.g., torso -> arm -> forearm -> hand).
-3. Incorporate the requested GENES into the design (e.g., if "wings" is present, attach "wing" symbols to the "torso").
-4. If "multi_legs" is present, add more legs.
-5. If "long_neck" is present, use "neck" segments between torso and head.
-6. Return ONLY the JSON object. Do not wrap it in markdown code blocks.
+3. **Organic Flow:** Use overlapping shapes and positions that flow naturally into each other. The renderer will automatically blend them. Avoid gaps between joints.
+4. Incorporate the requested GENES into the design.
+5. If "multi_legs" is present, add more legs.
+6. If "long_neck" is present, use multiple "neck" segments.
+7. Return ONLY the JSON object. Do not wrap it in markdown code blocks.
 `;
 
         const userPrompt = `Genes: ${JSON.stringify(genes)}`;
