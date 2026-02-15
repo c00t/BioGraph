@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GrammarSystem } from './grammar.js';
 import { LLM } from './llm.js';
 import { CreatureRenderer } from './renderer.js';
 import { GENE_LIST } from './genes.js';
+import { TEST_CREATURE } from './test_creature.js';
 
 class App {
     constructor() {
@@ -14,7 +14,6 @@ class App {
         this.controls = null;
 
         // App Components
-        this.grammarSystem = new GrammarSystem();
         this.creatureRenderer = null; // Initialized after scene
 
         this.init();
@@ -24,8 +23,9 @@ class App {
         // Populate with random genes on startup
         this.populateRandomGenes();
 
-        // Generate a default creature on startup
-        this.generateCreature();
+        // Render Test Creature on startup for verification
+        console.log("Rendering Test Creature...");
+        this.creatureRenderer.render(TEST_CREATURE);
     }
 
     populateRandomGenes() {
@@ -134,16 +134,12 @@ class App {
         }
 
         try {
-            // 1. LLM generates grammar rules based on genes
-            const rules = await LLM.generateGrammar(selectedGenes);
-            console.log("Grammar received:", rules);
+            // 1. LLM generates the creature structure directly (New Schema)
+            const creatureData = await LLM.generateGrammar(selectedGenes);
+            console.log("Creature Data received:", creatureData);
 
-            // 2. Grammar System expands the rules into a structure tree
-            this.grammarSystem.setRules(rules);
-            const structureTree = this.grammarSystem.expand('root');
-
-            // 3. Renderer constructs the 3D representation
-            this.creatureRenderer.render(structureTree);
+            // 2. Renderer constructs the 3D representation
+            this.creatureRenderer.render(creatureData);
         } catch (e) {
             console.error("Generation failed:", e);
         } finally {

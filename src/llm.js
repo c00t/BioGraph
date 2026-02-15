@@ -4,46 +4,82 @@ export const LLM = {
     generateGrammar: async function(genes) {
         console.log("LLM generating grammar for:", genes);
 
-        const systemPrompt = `You are a bio-engineer AI. Your task is to generate a hierarchical 3D structure for an organic creature based on a list of active genes.
-The creature will be rendered using Raymarching SDFs (Signed Distance Functions), allowing for smooth blending between parts, like metaballs.
+        const schemaDefinition = `
+{
+  "type": "object",
+  "required": ["phenotype_id", "behavior_profile", "style_parameters", "topology_graph"],
+  "properties": {
+    "phenotype_id": { "type": "string", "description": "Unique genotype code (e.g. MON-TITAN-X92)" },
+    "behavior_profile": {
+      "type": "object",
+      "required": ["personality", "locomotion_style"],
+      "properties": {
+        "personality": { "type": "string", "enum": ["aggressive", "timid", "territorial", "curious", "docile"] },
+        "locomotion_style": { "type": "string", "enum": ["bipedal", "quadrupedal", "hexapod", "arachnid", "serpentine", "hovering"] }
+      }
+    },
+    "style_parameters": {
+      "type": "object",
+      "required": ["smoothness", "chaos_factor", "primary_material"],
+      "properties": {
+        "smoothness": { "type": "number", "description": "SDF smooth min k (0.0 to 1.0)" },
+        "chaos_factor": { "type": "number", "description": "Noise factor" },
+        "primary_material": { "type": "string", "enum": ["organic_flesh", "chitin_shell", "crystal", "lava_rock", "plant_matter", "mechanical"] }
+      }
+    },
+    "topology_graph": {
+      "type": "object",
+      "required": ["root_node", "nodes"],
+      "properties": {
+        "root_node": { "type": "string", "description": "ID of the root node" },
+        "nodes": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "required": ["id", "semantic_role", "sdf_primitive", "scale", "parent", "relative_pos", "connection_type", "symmetry_pair", "deformation"],
+            "properties": {
+              "id": { "type": "string" },
+              "semantic_role": { "type": "string", "enum": ["core", "head", "limb_segment", "ik_end_effector", "tail", "weapon", "decoration"] },
+              "sdf_primitive": { "type": "string", "enum": ["sdRoundBox", "sdCappedCylinder", "sdSphere", "sdCapsule", "sdCone"] },
+              "scale": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Absolute scale [x, y, z]" },
+              "parent": { "type": ["string", "null"], "description": "Parent Node ID" },
+              "relative_pos": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Offset from parent [x, y, z]" },
+              "connection_type": { "type": "string", "enum": ["smooth_union", "rigid_union", "ball_joint", "subtract"] },
+              "symmetry_pair": { "type": ["string", "null"], "description": "ID of the mirrored node (e.g. arm_R). If null, no symmetry." },
+              "deformation": { "type": "string", "enum": ["none", "taper_top", "taper_bottom", "bend_forward", "bend_backward", "twist"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+`;
 
-You are not just assembling rigid parts; you are SCULPTING organic matter. You have full control over the shape, size, color, and blending of each part.
+        const systemPrompt = `You are an advanced Bio-Architect AI. Your goal is to design a procedural creature based on a set of genes, adhering strictly to a specific JSON Schema which serves as a Data Contract for an external SDF Geometry Engine.
 
-The output must be a valid JSON object representing the grammar rules.
+**CRITICAL INSTRUCTIONS:**
+1. **Output Format**: You must output ONLY valid JSON. Do not include markdown formatting or explanations.
+2. **Schema Adherence**: The output must validate against the provided JSON Schema.
+3. **Data Contract**:
+   - **maxItems: 20**: The 'nodes' array must NOT exceed 20 items. Use large, expressive shapes (Capsules, Boxes) to define volume efficiently. Avoid clutter.
+   - **Hierarchy**: The 'parent' chain depth (distance from root) must not exceed 5.
+   - **Symmetry**: Do NOT output the mirrored side in the 'nodes' array. Output ONLY the left side (or right) and set 'symmetry_pair' to the ID the mirrored node *would* have (e.g., if defining 'arm_L', set symmetry_pair to 'arm_R'). The engine handles the mirroring automatically.
+   - **IK Anchors**: For legs/feet, you MUST set 'semantic_role' to 'ik_end_effector' on the node that touches the ground. This activates the procedural gait controller.
+   - **Connection Types**:
+     - 'smooth_union': Organic, fleshy blending.
+     - 'rigid_union' / 'ball_joint': Mechanical or articulated joints (sharp seams).
+     - 'subtract': Carve details (e.g. eye sockets, mouth).
 
-Structure:
-- The JSON object keys are symbols (strings) (e.g., "torso", "arm_segment", "eye").
-- The values are arrays of instruction objects.
-- Each instruction object describes a child part attached to the parent symbol.
-- Instruction fields:
-  - "symbol": (string) The name of the child part.
-  - "pos": [x, y, z] (Array of 3 numbers) Position relative to parent.
-  - "rot": [x, y, z] (Array of 3 numbers) Rotation in degrees. (Optional, default [0,0,0])
-  - "scl": [x, y, z] (Array of 3 numbers) Scale. (Optional, default [1,1,1])
-  - "params": {} (Object) Visual parameters for this part.
+**Design Guidelines**:
+- Interpret the **Genes** creatively. "Predator" might imply 'aggressive' personality, 'chitin_shell' material, and 'weapon' nodes.
+- Ensure the 'root_node' (usually torso/core) has 'parent': null and is at [0,0,0] (or appropriate height).
+- Use 'relative_pos' to offset children from parents.
+- Balance the creature. If 'quadrupedal', ensure 4 limb chains end in effectors (even if you only define 2 and use symmetry).
 
-"params" Object Fields (Crucial for the Look):
-  - "shape": (string) "sphere", "box", "capsule", "cylinder".
-  - "size": [x, y, z] (Array of 3 numbers) The dimensions of the shape.
-    - sphere: [radius, 0, 0] (Use x for radius)
-    - box: [half_width, half_height, half_depth]
-    - capsule: [radius, height, 0] (x is radius, y is height)
-    - cylinder: [radius, height, 0] (x is radius, y is height)
-  - "color": [r, g, b] (Array of 3 floats, 0.0 - 1.0).
-  - "blend": (float, 0.0 - 1.0) How much this shape blends with its parent and neighbors.
-    - 0.0 = Rigid connection (sharp seams).
-    - 0.3 - 0.5 = Organic muscle/skin blending.
-    - 0.8+ = Very blobby/liquid.
-
-Design Guidelines:
-1. **Metaball Creature:** Use "sphere" and "capsule" with high "blend" values (0.3 - 0.6) to create fleshy, organic forms that flow into each other.
-2. **Hierarchy:** The "root" usually contains the "torso". Build limbs (arms, legs) as chains of segments.
-3. **Hard Parts:** Use "box" or "cylinder" with low "blend" (0.0 - 0.1) for beaks, claws, horns, or armor plates.
-4. **Genes:** Incorporate the requested GENES.
-   - "multi_legs": Add more leg chains.
-   - "long_neck": Add a chain of neck segments.
-   - "spikes": Add sharp, low-blend cones (capsules with variable size or just small capsules) or boxes.
-5. Return ONLY the JSON object. Do not wrap it in markdown code blocks.
+**JSON Schema**:
+${schemaDefinition}
 `;
 
         const userPrompt = `Genes: ${JSON.stringify(genes)}`;
@@ -54,8 +90,8 @@ Design Guidelines:
                 headers: {
                     "Authorization": `Bearer ${CONFIG.OPENROUTER_API_KEY}`,
                     "Content-Type": "application/json",
-                    "HTTP-Referer": window.location.href, // Optional
-                    "X-Title": "BioGraph" // Optional
+                    "HTTP-Referer": window.location.href,
+                    "X-Title": "BioGraph"
                 },
                 body: JSON.stringify({
                     "model": "z-ai/glm-4.7-flash",
@@ -63,7 +99,8 @@ Design Guidelines:
                         { "role": "system", "content": systemPrompt },
                         { "role": "user", "content": userPrompt }
                     ],
-                    "temperature": 0.7
+                    "temperature": 0.7,
+                    "response_format": { "type": "json_object" } // specific for some providers, harmless if ignored
                 })
             });
 
@@ -76,7 +113,7 @@ Design Guidelines:
 
             console.log("LLM Raw Response Content:", content);
 
-            // Simple cleanup to handle potential markdown code blocks
+            // Simple cleanup
             let jsonString = content.trim();
             if (jsonString.startsWith("```json")) {
                 jsonString = jsonString.slice(7);
@@ -88,20 +125,27 @@ Design Guidelines:
                 jsonString = jsonString.slice(0, -3);
             }
 
-            const rules = JSON.parse(jsonString);
-            return rules;
+            const creatureData = JSON.parse(jsonString);
+            return creatureData;
 
         } catch (error) {
             console.error("LLM Generation Failed:", error);
-            // Fallback or re-throw
-            // For now, let's return a simple fallback to prevent crash
+            // Fallback for testing/error
+            // Return a minimal valid object conforming to the new schema
              return {
-                "root": [
-                    { "symbol": "torso", "pos": [0, 1.5, 0] }
-                ],
-                "torso": [
-                    { "symbol": "head", "pos": [0, 1, 0] }
-                ]
+                "phenotype_id": "ERROR-FALLBACK",
+                "behavior_profile": { "personality": "docile", "locomotion_style": "hovering" },
+                "style_parameters": { "smoothness": 0.5, "chaos_factor": 0.0, "primary_material": "organic_flesh" },
+                "topology_graph": {
+                    "root_node": "core",
+                    "nodes": [
+                        {
+                            "id": "core", "semantic_role": "core", "sdf_primitive": "sdSphere",
+                            "scale": [1, 1, 1], "parent": null, "relative_pos": [0, 1, 0],
+                            "connection_type": "smooth_union", "symmetry_pair": null, "deformation": "none"
+                        }
+                    ]
+                }
             };
         }
     }
