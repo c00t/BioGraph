@@ -28,6 +28,7 @@ struct Shape {
     vec3 size;
     vec3 color;
     float blend; // Smoothness k
+    int deformation; // 0: None, 1: Taper Top, 2: Taper Bottom, 3: Bend Fwd, 4: Bend Back
 };
 
 uniform Shape uShapes[MAX_SHAPES];
@@ -53,6 +54,36 @@ float smin(float a, float b, float k) {
     return mix(b, a, h) - k * h * (1.0 - h);
 }
 
+// --- Deformation ---
+vec3 opDeform(vec3 p, int type) {
+    if (type == 1) { // Taper Top
+        float k = 0.3;
+        float f = 1.0 - k * clamp(p.y, 0.0, 2.0);
+        p.xz /= max(0.1, f);
+    } else if (type == 2) { // Taper Bottom
+        float k = 0.3;
+        float f = 1.0 - k * clamp(-p.y, 0.0, 2.0);
+        p.xz /= max(0.1, f);
+    } else if (type == 3) { // Bend Forward (Bend +Z)
+        float k = 0.2;
+        float c = cos(k*p.y);
+        float s = sin(k*p.y);
+        mat2 m = mat2(c, -s, s, c);
+        vec2 q = m * p.yz;
+        p.y = q.x;
+        p.z = q.y;
+    } else if (type == 4) { // Bend Backward (Bend -Z)
+         float k = -0.2;
+         float c = cos(k*p.y);
+         float s = sin(k*p.y);
+         mat2 m = mat2(c, -s, s, c);
+         vec2 q = m * p.yz;
+         p.y = q.x;
+         p.z = q.y;
+    }
+    return p;
+}
+
 // --- SDF Primitives ---
 float sdSphere(vec3 p, float s) {
     return length(p) - s;
@@ -74,33 +105,8 @@ float sdCappedCylinder(vec3 p, float h, float r) {
 }
 
 float sdCone(vec3 p, float h, float r) {
-    // c defined by radius r and height h
-    // sin(a) = r / sqrt(r*r + h*h)
-    // cos(a) = h / sqrt(r*r + h*h)
-    float hyp = sqrt(r*r + h*h);
-    vec2 c = vec2(r/hyp, h/hyp);
-
-    // Inigo Quilez sdCone
-    // p.y is height, p.xz is radius
-    // We center it at 0. So y goes from -h/2 to h/2 ??
-    // Usually sdCone base is at y=0, tip at y=-h or y=h?
-    // Let's assume standard centering: y=0 is center.
-    // Actually IQ's cone: tip at 0.
-
-    // Let's shift p so center is at 0
-    // If we want height h centered at 0:
-    // p.y += h/2.0; // tip at h/2 ?
-
-    // Simplified cone:
-    float q = length(p.xz);
-    return max(dot(c.xy, vec2(q, p.y)), -h - p.y);
-
-    // This is tricky without exact specs.
-    // Let's try to adapt sdCappedCone or just a simple cone.
-    // For now, let's use a Capped Cone which is safer.
-    // But schema says "sdCone".
-    // I'll stick to a simple approximation or fallback to Capsule if tricky.
-    // Let's use sdCappedCone logic but with r2=0.
+    // Using CappedCone logic but simplified
+    return sdCappedCylinder(p, h, r); // Fallback to cylinder if needed, but lets use CappedCone below
 }
 
 float sdCappedCone(vec3 p, float h, float r1, float r2)
@@ -120,13 +126,6 @@ vec2 map(vec3 p) {
     float d = MAX_DIST;
     float matID = 0.0;
 
-    // We assume the list is somewhat sorted or we just combine sequentially.
-    // Boolean operations are non-commutative in some cases, but for "add parts to body",
-    // usually: Body U Head U Arm.
-    // Subtract is: (Body U Head) - Eye.
-    // So sequential works if subtracts come after the thing they subtract from.
-    // The renderer sorts this out.
-
     for (int i = 0; i < MAX_SHAPES; i++) {
         if (i >= uShapeCount) break;
 
@@ -134,6 +133,11 @@ vec2 map(vec3 p) {
 
         // Transform point to local space
         vec3 localP = inverseRotateVector(p - s.pos, s.rot);
+
+        // Apply Deformation
+        if (s.deformation > 0) {
+            localP = opDeform(localP, s.deformation);
+        }
 
         float dist = MAX_DIST;
 
@@ -194,6 +198,12 @@ vec3 calcColor(vec3 p) {
         if (s.operation == 2) continue;
 
         vec3 localP = inverseRotateVector(p - s.pos, s.rot);
+
+        // Apply Deformation for color check too
+        if (s.deformation > 0) {
+            localP = opDeform(localP, s.deformation);
+        }
+
         float dist = MAX_DIST;
 
         if (s.type == 0) dist = sdRoundBox(localP, s.size, 0.1);
@@ -280,7 +290,8 @@ export class CreatureRenderer {
                 rot: new THREE.Vector4(0,0,0,1),
                 size: new THREE.Vector3(1,1,1),
                 color: new THREE.Vector3(0,1,0),
-                blend: 0.1
+                blend: 0.1,
+                deformation: 0
             });
         }
         this.uniforms.uShapes.value = shapes;
@@ -325,6 +336,7 @@ export class CreatureRenderer {
             u.size.copy(s.size);
             u.color.copy(s.color);
             u.blend = s.blend !== undefined ? s.blend : globalSmoothness;
+            u.deformation = s.deformation || 0;
         }
 
         // 3. Create Geometry
@@ -480,8 +492,67 @@ export class CreatureRenderer {
         else if (node.connection_type === "ball_joint") op = 1; // Treat as rigid
         else if (node.connection_type === "subtract") op = 2;
 
-        // Size
-        const size = new THREE.Vector3(...node.scale);
+        // Deformation Mapping
+        let deformation = 0;
+        if (node.deformation === "taper_top") deformation = 1;
+        else if (node.deformation === "taper_bottom") deformation = 2;
+        else if (node.deformation === "bend_forward") deformation = 3;
+        else if (node.deformation === "bend_backward") deformation = 4;
+
+        // Size & Orientation logic
+        // Input scale is assumed to be Full Dimensions / Diameter.
+        // SDFs usually expect Half-Extents / Radius.
+        let rawScale = new THREE.Vector3(...node.scale).multiplyScalar(0.5);
+
+        let finalRot = rot.clone();
+        let finalSize = rawScale.clone();
+
+        // For Radial Primitives (Cylinder, Capsule, Cone), we must align the primitive's Y axis
+        // with the longest dimension of the requested scale, because the shader assumes Y-alignment.
+        if (type === 1 || type === 3 || type === 4) {
+            const x = rawScale.x;
+            const y = rawScale.y;
+            const z = rawScale.z;
+
+            let maxAxis = 'y';
+            let radius = Math.max(x, z);
+            let height = y * 2.0; // Full height
+
+            if (x > y && x > z) {
+                maxAxis = 'x';
+                radius = Math.max(y, z);
+                height = x * 2.0;
+                // Align Y to X: Rotate -90 deg around Z
+                const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2);
+                finalRot.multiply(q);
+            } else if (z > y && z > x) {
+                maxAxis = 'z';
+                radius = Math.max(x, y);
+                height = z * 2.0;
+                // Align Y to Z: Rotate 90 deg around X
+                const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+                finalRot.multiply(q);
+            } else {
+                // Y is dominant, no rotation needed
+                radius = Math.max(x, z);
+                height = y * 2.0;
+            }
+
+            // Adjust dimensions based on primitive type
+            finalSize.x = radius;
+
+            if (type === 3) { // Capsule
+                // Shader expects stick length h. Total height = h + 2r.
+                // h = Total - 2r.
+                let stick = height - 2.0 * radius;
+                finalSize.y = Math.max(0.0, stick);
+            } else {
+                // Cylinder, Cone: Shader expects full height (or handles it via half-height internally)
+                // For Cylinder in shader: sdCappedCylinder(p, h, r). h passed is s.size.y.
+                // Shader implementation of Cylinder uses h/2.0 for bounds, so h is FULL height.
+                finalSize.y = height;
+            }
+        }
 
         // Color
         let color;
@@ -495,10 +566,11 @@ export class CreatureRenderer {
             type: type,
             operation: op,
             pos: pos,
-            rot: rot,
-            size: size,
+            rot: finalRot,
+            size: finalSize,
             color: color,
-            blend: defaultSmoothness // Could derive from node params if available
+            blend: defaultSmoothness,
+            deformation: deformation
         };
     }
 
