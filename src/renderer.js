@@ -424,7 +424,9 @@ export class CreatureRenderer {
             resultShapes.push(shape);
 
             // Handle Symmetry
-            if (node.symmetry_pair) {
+            // Only generate mirror if the paired node doesn't exist in the graph explicitly.
+            // This prevents double-generation if the input JSON contains both sides (L and R).
+            if (node.symmetry_pair && !nodeMap.has(node.symmetry_pair)) {
                 // Generate mirrored shape
                 // Mirror across X axis of the ROOT (or world 0?). Usually creature symmetry is X-axis.
                 // Pos x -> -x.
