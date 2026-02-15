@@ -115,16 +115,13 @@ ${schemaDefinition}
 
             console.log("LLM Raw Response Content:", content);
 
-            // Simple cleanup
-            let jsonString = content.trim();
-            if (jsonString.startsWith("```json")) {
-                jsonString = jsonString.slice(7);
-            }
-            if (jsonString.startsWith("```")) {
-                jsonString = jsonString.slice(3);
-            }
-            if (jsonString.endsWith("```")) {
-                jsonString = jsonString.slice(0, -3);
+            // Robust JSON extraction
+            const firstBrace = content.indexOf('{');
+            const lastBrace = content.lastIndexOf('}');
+
+            let jsonString = content;
+            if (firstBrace !== -1 && lastBrace !== -1) {
+                jsonString = content.substring(firstBrace, lastBrace + 1);
             }
 
             const creatureData = JSON.parse(jsonString);
