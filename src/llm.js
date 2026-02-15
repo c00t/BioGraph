@@ -96,7 +96,7 @@ ${schemaDefinition}
                     "X-Title": "BioGraph"
                 },
                 body: JSON.stringify({
-                    "model": "z-ai/glm-4.7-flash",
+                    "model": "minimax/minimax-m2.5",
                     "messages": [
                         { "role": "system", "content": systemPrompt },
                         { "role": "user", "content": userPrompt }
