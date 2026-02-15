@@ -37,12 +37,13 @@ export const LLM = {
           "maxItems": 20,
           "items": {
             "type": "object",
-            "required": ["id", "semantic_role", "sdf_primitive", "scale", "parent", "relative_pos", "connection_type", "symmetry_pair", "deformation"],
+            "required": ["id", "semantic_role", "sdf_primitive", "scale", "color", "parent", "relative_pos", "connection_type", "symmetry_pair", "deformation"],
             "properties": {
               "id": { "type": "string" },
               "semantic_role": { "type": "string", "enum": ["core", "head", "limb_segment", "ik_end_effector", "tail", "weapon", "decoration"] },
               "sdf_primitive": { "type": "string", "enum": ["sdRoundBox", "sdCappedCylinder", "sdSphere", "sdCapsule", "sdCone"] },
               "scale": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Absolute scale [x, y, z]" },
+              "color": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 }, "minItems": 3, "maxItems": 3, "description": "RGB color [0-1, 0-1, 0-1]" },
               "parent": { "type": ["string", "null"], "description": "Parent Node ID" },
               "relative_pos": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Offset from parent [x, y, z]" },
               "connection_type": { "type": "string", "enum": ["smooth_union", "rigid_union", "ball_joint", "subtract"] },
@@ -74,6 +75,7 @@ export const LLM = {
 
 **Design Guidelines**:
 - Interpret the **Genes** creatively. "Predator" might imply 'aggressive' personality, 'chitin_shell' material, and 'weapon' nodes.
+- **Coloring**: Assign specific RGB colors to each node based on the creature's theme and the part's function. E.g., a "lava" creature should have dark rock skin (0.1, 0.1, 0.1) and bright glowing cores (1.0, 0.3, 0.0). "Plant" creatures should vary in greens. Eyes/sensors should contrast with the body.
 - Ensure the 'root_node' (usually torso/core) has 'parent': null and is at [0,0,0] (or appropriate height).
 - Use 'relative_pos' to offset children from parents.
 - Balance the creature. If 'quadrupedal', ensure 4 limb chains end in effectors (even if you only define 2 and use symmetry).
@@ -141,7 +143,7 @@ ${schemaDefinition}
                     "nodes": [
                         {
                             "id": "core", "semantic_role": "core", "sdf_primitive": "sdSphere",
-                            "scale": [1, 1, 1], "parent": null, "relative_pos": [0, 1, 0],
+                            "scale": [1, 1, 1], "color": [0.8, 0.5, 0.4], "parent": null, "relative_pos": [0, 1, 0],
                             "connection_type": "smooth_union", "symmetry_pair": null, "deformation": "none"
                         }
                     ]

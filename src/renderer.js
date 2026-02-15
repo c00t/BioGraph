@@ -484,7 +484,12 @@ export class CreatureRenderer {
         const size = new THREE.Vector3(...node.scale);
 
         // Color
-        const color = this._getColor(primaryMaterial, node.semantic_role);
+        let color;
+        if (node.color && Array.isArray(node.color) && node.color.length === 3) {
+             color = new THREE.Vector3(...node.color);
+        } else {
+             color = this._getColor(primaryMaterial, node.semantic_role);
+        }
 
         return {
             type: type,
