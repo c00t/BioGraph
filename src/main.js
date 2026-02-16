@@ -136,14 +136,22 @@ class App {
         }
 
         try {
+            // Clear previous creature to avoid confusion if generation fails
+            this.creatureRenderer.clear();
+
             // 1. LLM generates the creature structure directly (New Schema)
             const creatureData = await LLM.generateGrammar(selectedGenes);
             console.log("Creature Data received:", creatureData);
+
+            if (!creatureData || !creatureData.topology_graph) {
+                throw new Error("Invalid creature data received from LLM");
+            }
 
             // 2. Renderer constructs the 3D representation
             this.creatureRenderer.render(creatureData);
         } catch (e) {
             console.error("Generation failed:", e);
+            alert(`Generation failed: ${e.message}`);
         } finally {
              if (btn) {
                 btn.disabled = false;
