@@ -84,10 +84,10 @@ export const LLM = {
      - 'subtract': Carve details (e.g. eye sockets, mouth).
 
 **Advanced Features**:
-- **Flat Objects (Wings/Fins)**: Use `sdEllipsoid` with a flattened scale (e.g., `[1.0, 0.1, 0.5]`) to create wings, fins, or plates.
-- **Procedural Arrays**: Use the `layout` property to create repeating patterns like feathers, scales, or teeth.
-  - **Radial**: `{"type": "radial", "count": 5, "axis": "z", "spread": 60}` creates a fan of 5 items spread over 60 degrees. Useful for wing feathers.
-  - **Linear**: `{"type": "linear", "count": 6, "axis": "y", "spread": 2.0}` creates a row of 6 items. Useful for spine spikes or teeth.
+- **Flat Objects (Wings/Fins)**: Use \`sdEllipsoid\` with a flattened scale (e.g., \`[1.0, 0.1, 0.5]\`) to create wings, fins, or plates.
+- **Procedural Arrays**: Use the \`layout\` property to create repeating patterns like feathers, scales, or teeth.
+  - **Radial**: \`{"type": "radial", "count": 5, "axis": "z", "spread": 60}\` creates a fan of 5 items spread over 60 degrees. Useful for wing feathers.
+  - **Linear**: \`{"type": "linear", "count": 6, "axis": "y", "spread": 2.0}\` creates a row of 6 items. Useful for spine spikes or teeth.
 
 **Design Guidelines**:
 - Interpret the **Genes** creatively. "Predator" might imply 'aggressive' personality, 'chitin_shell' material, and 'weapon' nodes.
