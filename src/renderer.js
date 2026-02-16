@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const MAX_SHAPES = 64;
+const MAX_SHAPES = 128;
 
 const vertexShader = `
 varying vec3 vWorldPosition;
@@ -15,13 +15,13 @@ void main() {
 const fragmentShader = `
 precision highp float;
 
-#define MAX_SHAPES 64
+#define MAX_SHAPES 128
 #define MAX_STEPS 100
 #define MAX_DIST 100.0
 #define SURF_DIST 0.001
 
 struct Shape {
-    int type; // 0: RoundBox, 1: CappedCylinder, 2: Sphere, 3: Capsule, 4: Cone
+    int type; // 0: RoundBox, 1: CappedCylinder, 2: Sphere, 3: Capsule, 4: Cone, 5: Ellipsoid
     int operation; // 0: Smooth Union, 1: Rigid Union, 2: Subtract
     vec3 pos;
     vec4 rot; // Quaternion
@@ -120,6 +120,13 @@ float sdCappedCone(vec3 p, float h, float r1, float r2)
   return s*sqrt( min(dot(ca,ca),dot(cb,cb)) );
 }
 
+float calcEllipsoid( vec3 p, vec3 r )
+{
+  float k0 = length(p/r);
+  float k1 = length(p/(r*r));
+  return k0*(k0-1.0)/k1;
+}
+
 
 // --- Map Function ---
 vec2 map(vec3 p) {
@@ -151,6 +158,8 @@ vec2 map(vec3 p) {
             dist = sdCapsule(localP, s.size.y, s.size.x);
         } else if (s.type == 4) { // Cone (using CappedCone with top radius 0)
             dist = sdCappedCone(localP, s.size.y * 0.5, s.size.x, 0.0);
+        } else if (s.type == 5) { // Ellipsoid
+            dist = calcEllipsoid(localP, s.size);
         }
 
         if (i == 0) {
@@ -211,6 +220,7 @@ vec3 calcColor(vec3 p) {
         else if (s.type == 2) dist = sdSphere(localP, s.size.x);
         else if (s.type == 3) dist = sdCapsule(localP, s.size.y, s.size.x);
         else if (s.type == 4) dist = sdCappedCone(localP, s.size.y * 0.5, s.size.x, 0.0);
+        else if (s.type == 5) dist = calcEllipsoid(localP, s.size);
 
         float w = 1.0 / (abs(dist) + 0.001);
         w = pow(w, 4.0); // High sharpen to isolate colors
@@ -388,90 +398,108 @@ export class CreatureRenderer {
             const node = nodeMap.get(nodeId);
             if (!node) return;
 
-            // Compute Local Matrix
-            // relative_pos is [x, y, z]
-            // We assume standard rotation (identity) for now as schema doesn't specify rotation in 'relative_pos' or elsewhere explicitly except maybe inferred?
-            // Wait, schema says: "relative_pos": [x,y,z]. NO ROTATION in schema for nodes?
-            // "deformation" might imply bending, but basic rotation is missing?
-            // Ah, usually bones have rotation. But the schema only lists `relative_pos`.
-            // Let's assume identity rotation locally.
-            // UNLESS: The primitives themselves align with the bone?
-            // `scale` is absolute scale.
+            // Handle Layout (Arrays)
+            let layoutCount = 1;
+            let layoutType = "none";
+            let layoutAxis = "y";
+            let layoutSpread = 0;
 
-            const localMatrix = new THREE.Matrix4();
-            const pos = new THREE.Vector3(...node.relative_pos);
-            localMatrix.makeTranslation(pos.x, pos.y, pos.z);
-
-            // World Matrix
-            const worldMatrix = new THREE.Matrix4();
-            if (parentMatrix) {
-                worldMatrix.multiplyMatrices(parentMatrix, localMatrix);
-            } else {
-                worldMatrix.copy(localMatrix);
+            if (node.layout) {
+                 if (typeof node.layout === 'object') {
+                     layoutCount = Math.max(1, Math.min(node.layout.count || 1, 20)); // Limit to 20 per node
+                     layoutType = node.layout.type || "none";
+                     layoutAxis = node.layout.axis || "y";
+                     layoutSpread = node.layout.spread || 0;
+                 }
             }
 
-            // Extract transform for this shape
-            const worldPos = new THREE.Vector3();
-            const worldQuat = new THREE.Quaternion();
-            const worldScale = new THREE.Vector3(); // Not used directly, we use node.scale which is absolute?
-            // Schema: "scale": "Three dimensional absolute scale".
-            // So we use node.scale directly for size, and worldMatrix for position/rotation.
+            // If layoutType is none, count is 1
+            if (layoutType === "none") layoutCount = 1;
 
-            worldMatrix.decompose(worldPos, worldQuat, worldScale);
+            // Iterate instances
+            for (let i = 0; i < layoutCount; i++) {
 
-            // Generate Shape
-            const shape = this._createShape(node, worldPos, worldQuat, primaryMaterial, globalSmoothness);
-            resultShapes.push(shape);
+                const localMatrix = new THREE.Matrix4();
+                const basePos = new THREE.Vector3(...node.relative_pos);
 
-            // Handle Symmetry
-            // Only generate mirror if the paired node doesn't exist in the graph explicitly.
-            // This prevents double-generation if the input JSON contains both sides (L and R).
-            if (node.symmetry_pair && !nodeMap.has(node.symmetry_pair)) {
-                // Generate mirrored shape
-                // Mirror across X axis of the ROOT (or world 0?). Usually creature symmetry is X-axis.
-                // Pos x -> -x.
-                // Rotation needs mirroring too.
-                const mirrorPos = new THREE.Vector3(-worldPos.x, worldPos.y, worldPos.z);
+                if (layoutType === "radial" && layoutCount > 1) {
+                    // Centered Spread: -spread/2 to +spread/2
+                    const spreadRad = layoutSpread * (Math.PI / 180);
+                    const startAngle = -spreadRad / 2;
+                    const step = spreadRad / (layoutCount - 1);
+                    const angle = startAngle + i * step;
 
-                // Mirror quaternion: (x, y, z, w) -> (-x, y, z, -w) ???
-                // Or construct lookAt.
-                // Simple hack: Reflected quaternion.
-                // If we flip X, we flip the quaternion X and W components?
-                // Let's try: q(-x, y, z, -w) is a rotation 180 around Y then normal?
-                // Actually, standard mirror X:
-                // pos.x *= -1
-                // For a symmetric object like a Box, rotation mirror:
-                // Euler (x, y, z) -> (x, -y, -z)?
+                    const axisVec = new THREE.Vector3();
+                    if (layoutAxis === 'x') axisVec.set(1, 0, 0);
+                    else if (layoutAxis === 'z') axisVec.set(0, 0, 1);
+                    else axisVec.set(0, 1, 0);
 
-                // Let's rely on geometric symmetry.
-                const mirrorQuat = new THREE.Quaternion(worldQuat.x, -worldQuat.y, -worldQuat.z, worldQuat.w); // This might be wrong.
+                    // Order: Rotate then Translate (Orbit)
+                    // R * T
+                    const rotMat = new THREE.Matrix4().makeRotationAxis(axisVec, angle);
+                    const transMat = new THREE.Matrix4().makeTranslation(basePos.x, basePos.y, basePos.z);
 
-                // Correct mirroring of a quaternion across YZ plane (X axis normal):
-                // q_new = (q.w, -q.x, q.y, q.z) ? No.
-                // Let's try Euler.
-                // If original was rotated R around Y, new is -R around Y.
-                // If original R around Z, new is -R around Z.
-                // If original R around X, new is R around X.
-                // So Euler: (x, -y, -z).
+                    localMatrix.multiplyMatrices(rotMat, transMat);
 
-                // Let's assume no rotation for now since input has no rotation, so quat is Identity.
-                // Identity mirrored is Identity.
-                // So (0,0,0,1).
+                } else if (layoutType === "linear" && layoutCount > 1) {
+                    // Centered Linear Spread
+                    const startOffset = -layoutSpread / 2;
+                    const step = layoutSpread / (layoutCount - 1);
+                    const offset = startOffset + i * step;
 
-                const mirrorShape = this._createShape(node, mirrorPos, mirrorQuat, primaryMaterial, globalSmoothness);
-                resultShapes.push(mirrorShape);
-            }
+                    const offsetVec = new THREE.Vector3();
+                    if (layoutAxis === 'x') offsetVec.set(offset, 0, 0);
+                    else if (layoutAxis === 'z') offsetVec.set(0, 0, offset);
+                    else offsetVec.set(0, offset, 0);
 
-            // Children
-            const children = childrenMap.get(nodeId);
-            if (children) {
-                children.forEach(childId => processNode(childId, worldMatrix));
+                    const finalPos = basePos.clone().add(offsetVec);
+                    localMatrix.makeTranslation(finalPos.x, finalPos.y, finalPos.z);
+
+                } else {
+                    // Default / Single
+                    localMatrix.makeTranslation(basePos.x, basePos.y, basePos.z);
+                }
+
+                // World Matrix
+                const worldMatrix = new THREE.Matrix4();
+                if (parentMatrix) {
+                    worldMatrix.multiplyMatrices(parentMatrix, localMatrix);
+                } else {
+                    worldMatrix.copy(localMatrix);
+                }
+
+                // Extract and Create Shape
+                const worldPos = new THREE.Vector3();
+                const worldQuat = new THREE.Quaternion();
+                const worldScale = new THREE.Vector3();
+
+                worldMatrix.decompose(worldPos, worldQuat, worldScale);
+
+                const shape = this._createShape(node, worldPos, worldQuat, primaryMaterial, globalSmoothness);
+                resultShapes.push(shape);
+
+                // Symmetry
+                if (node.symmetry_pair && !nodeMap.has(node.symmetry_pair)) {
+                    // Mirror across X axis of the ROOT
+                    const mirrorPos = new THREE.Vector3(-worldPos.x, worldPos.y, worldPos.z);
+                    // Mirror quaternion: (x, -y, -z, w) for X-mirror
+                    const mirrorQuat = new THREE.Quaternion(worldQuat.x, -worldQuat.y, -worldQuat.z, worldQuat.w);
+
+                    const mirrorShape = this._createShape(node, mirrorPos, mirrorQuat, primaryMaterial, globalSmoothness);
+                    resultShapes.push(mirrorShape);
+                }
+
+                // Children
+                // Pass worldMatrix of THIS instance
+                const children = childrenMap.get(nodeId);
+                if (children) {
+                    children.forEach(childId => processNode(childId, worldMatrix));
+                }
             }
         };
 
-        // Start at root. Root parent is null.
-        // We assume root is at (0,0,0) world or applied `relative_pos` from origin.
-        processNode(rootId, new THREE.Matrix4()); // Identity as parent of root
+        // Start at root
+        processNode(rootId, new THREE.Matrix4());
 
         return resultShapes;
     }
@@ -485,6 +513,7 @@ export class CreatureRenderer {
         else if (node.sdf_primitive === "sdSphere") type = 2;
         else if (node.sdf_primitive === "sdCapsule") type = 3;
         else if (node.sdf_primitive === "sdCone") type = 4;
+        else if (node.sdf_primitive === "sdEllipsoid") type = 5;
 
         // Map Connection Type
         // smooth_union, rigid_union, ball_joint, subtract

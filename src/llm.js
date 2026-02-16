@@ -41,14 +41,24 @@ export const LLM = {
             "properties": {
               "id": { "type": "string" },
               "semantic_role": { "type": "string", "enum": ["core", "head", "limb_segment", "ik_end_effector", "tail", "weapon", "decoration"] },
-              "sdf_primitive": { "type": "string", "enum": ["sdRoundBox", "sdCappedCylinder", "sdSphere", "sdCapsule", "sdCone"] },
+              "sdf_primitive": { "type": "string", "enum": ["sdRoundBox", "sdCappedCylinder", "sdSphere", "sdCapsule", "sdCone", "sdEllipsoid"] },
               "scale": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Absolute scale [x, y, z]" },
               "color": { "type": "array", "items": { "type": "number", "minimum": 0, "maximum": 1 }, "minItems": 3, "maxItems": 3, "description": "RGB color [0-1, 0-1, 0-1]" },
               "parent": { "type": ["string", "null"], "description": "Parent Node ID" },
               "relative_pos": { "type": "array", "items": { "type": "number" }, "minItems": 3, "maxItems": 3, "description": "Offset from parent [x, y, z]" },
               "connection_type": { "type": "string", "enum": ["smooth_union", "rigid_union", "ball_joint", "subtract"] },
               "symmetry_pair": { "type": ["string", "null"], "description": "ID of the mirrored node (e.g. arm_R). If null, no symmetry." },
-              "deformation": { "type": "string", "enum": ["none", "taper_top", "taper_bottom", "bend_forward", "bend_backward", "twist"] }
+              "deformation": { "type": "string", "enum": ["none", "taper_top", "taper_bottom", "bend_forward", "bend_backward", "twist"] },
+              "layout": {
+                "type": "object",
+                "properties": {
+                  "type": { "type": "string", "enum": ["radial", "linear"] },
+                  "count": { "type": "integer", "minimum": 1, "maximum": 20 },
+                  "axis": { "type": "string", "enum": ["x", "y", "z"] },
+                  "spread": { "type": "number", "description": "Total angle (degrees) for radial or distance for linear" }
+                },
+                "description": "Procedural array of this node (e.g. fan of feathers, row of spikes)"
+              }
             }
           }
         }
@@ -72,6 +82,12 @@ export const LLM = {
      - 'smooth_union': Organic, fleshy blending.
      - 'rigid_union' / 'ball_joint': Mechanical or articulated joints (sharp seams).
      - 'subtract': Carve details (e.g. eye sockets, mouth).
+
+**Advanced Features**:
+- **Flat Objects (Wings/Fins)**: Use `sdEllipsoid` with a flattened scale (e.g., `[1.0, 0.1, 0.5]`) to create wings, fins, or plates.
+- **Procedural Arrays**: Use the `layout` property to create repeating patterns like feathers, scales, or teeth.
+  - **Radial**: `{"type": "radial", "count": 5, "axis": "z", "spread": 60}` creates a fan of 5 items spread over 60 degrees. Useful for wing feathers.
+  - **Linear**: `{"type": "linear", "count": 6, "axis": "y", "spread": 2.0}` creates a row of 6 items. Useful for spine spikes or teeth.
 
 **Design Guidelines**:
 - Interpret the **Genes** creatively. "Predator" might imply 'aggressive' personality, 'chitin_shell' material, and 'weapon' nodes.
