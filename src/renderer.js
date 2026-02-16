@@ -71,9 +71,20 @@ const sdCappedCone = Fn( ( [ p, h, r1, r2 ] ) => {
     const q = vec2( length(p.xz), p.y );
     const k1 = vec2(r2, h);
     const k2 = vec2(r2.sub(r1), h.mul(2.0));
-    const ca = vec2(q.x.sub(min(q.x, If(q.y.lessThan(0.0), r1).Else(r2))), abs(q.y).sub(h));
+
+    const r_local = float(r2).toVar();
+    If( q.y.lessThan(0.0), () => {
+        r_local.assign( r1 );
+    } );
+
+    const ca = vec2(q.x.sub(min(q.x, r_local)), abs(q.y).sub(h));
     const cb = q.sub(k1).add(k2.mul(clamp( dot(k1.sub(q), k2).div(dot(k2, k2)), 0.0, 1.0 )));
-    const s = If( cb.x.lessThan(0.0).and(ca.y.lessThan(0.0)), float(-1.0) ).Else( float(1.0) );
+
+    const s = float(1.0).toVar();
+    If( cb.x.lessThan(0.0).and(ca.y.lessThan(0.0)), () => {
+        s.assign( -1.0 );
+    } );
+
     return s.mul(sqrt(min(dot(ca, ca), dot(cb, cb))));
 } );
 
