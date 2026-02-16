@@ -1,375 +1,446 @@
 import * as THREE from 'three';
+import {
+    Fn, float, vec2, vec3, vec4, mat2, mat3, mat4,
+    storage, uniform, If, Loop, Break, Continue,
+    positionWorld, cameraPosition,
+    mix, clamp, length, abs, min, max, cross, dot, pow, normalize, sin, cos, sqrt,
+    int, uint,
+    timerLocal
+} from 'three/tsl';
 
-const MAX_SHAPES = 128;
+import { MeshBasicNodeMaterial, StorageBufferAttribute } from 'three/webgpu';
 
-const vertexShader = `
-varying vec3 vWorldPosition;
+const MAX_SHAPES = 1024;
+const STRIDE = 20; // 5 vec4s (20 floats) per shape
 
-void main() {
-    vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-    vWorldPosition = worldPosition.xyz;
-    gl_Position = projectionMatrix * viewMatrix * worldPosition;
-}
-`;
+// Define Struct Layout in Storage Buffer (Float32Array)
+// Chunk 0: type (float), operation (float), padding, padding
+// Chunk 1: pos.x, pos.y, pos.z, padding
+// Chunk 2: rot.x, rot.y, rot.z, rot.w
+// Chunk 3: size.x, size.y, size.z, blend
+// Chunk 4: color.r, color.g, color.b, deformation
 
-const fragmentShader = `
-precision highp float;
+const MAX_STEPS = 100;
+const MAX_DIST = 100.0;
+const SURF_DIST = 0.001;
 
-#define MAX_SHAPES 128
-#define MAX_STEPS 100
-#define MAX_DIST 100.0
-#define SURF_DIST 0.001
+// --- TSL Functions ---
 
-struct Shape {
-    int type; // 0: RoundBox, 1: CappedCylinder, 2: Sphere, 3: Capsule, 4: Cone, 5: Ellipsoid
-    int operation; // 0: Smooth Union, 1: Rigid Union, 2: Subtract
-    vec3 pos;
-    vec4 rot; // Quaternion
-    vec3 size;
-    vec3 color;
-    float blend; // Smoothness k
-    int deformation; // 0: None, 1: Taper Top, 2: Taper Bottom, 3: Bend Fwd, 4: Bend Back
-};
+// Quaternion Rotation
+const rotateVector = Fn( ( [ v, q ] ) => {
+    // v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v)
+    const qxyz = q.xyz;
+    const t = cross(qxyz, v).add(v.mul(q.w));
+    return v.add(cross(qxyz, t).mul(2.0));
+} );
 
-uniform Shape uShapes[MAX_SHAPES];
-uniform int uShapeCount;
-uniform float uTime;
-uniform vec3 uCameraPos;
-uniform vec3 uLightDir;
-uniform float uGlobalSmoothness;
+const inverseRotateVector = Fn( ( [ v, q ] ) => {
+    const invQ = vec4( q.xyz.negate(), q.w );
+    return rotateVector( v, invQ );
+} );
 
-varying vec3 vWorldPosition;
+// Smooth Min
+const smin = Fn( ( [ a, b, k ] ) => {
+    const h = clamp( float(0.5).add( float(0.5).mul( b.sub( a ) ).div( k ) ), 0.0, 1.0 );
+    return mix( b, a, h ).sub( k.mul( h ).mul( float(1.0).sub( h ) ) );
+} );
 
-// --- Math Helpers ---
-vec3 rotateVector(vec3 v, vec4 q) {
-    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
-}
+// SDF Primitives
+const sdSphere = Fn( ( [ p, s ] ) => {
+    return length(p).sub(s);
+} );
 
-vec3 inverseRotateVector(vec3 v, vec4 q) {
-    return rotateVector(v, vec4(-q.xyz, q.w));
-}
+const sdRoundBox = Fn( ( [ p, b, r ] ) => {
+    const q = abs(p).sub(b);
+    return length(max(q, 0.0)).add(min(max(q.x, max(q.y, q.z)), 0.0)).sub(r);
+} );
 
-float smin(float a, float b, float k) {
-    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
-    return mix(b, a, h) - k * h * (1.0 - h);
-}
+const sdCapsule = Fn( ( [ p, h, r ] ) => {
+    const py = p.y.sub( clamp( p.y, h.div(2.0).negate(), h.div(2.0) ) );
+    const pNew = vec3( p.x, py, p.z );
+    return length(pNew).sub(r);
+} );
 
-// --- Deformation ---
-vec3 opDeform(vec3 p, int type) {
-    if (type == 1) { // Taper Top
-        float k = 0.3;
-        float f = 1.0 - k * clamp(p.y, 0.0, 2.0);
-        p.xz /= max(0.1, f);
-    } else if (type == 2) { // Taper Bottom
-        float k = 0.3;
-        float f = 1.0 - k * clamp(-p.y, 0.0, 2.0);
-        p.xz /= max(0.1, f);
-    } else if (type == 3) { // Bend Forward (Bend +Z)
-        float k = 0.2;
-        float c = cos(k*p.y);
-        float s = sin(k*p.y);
-        mat2 m = mat2(c, -s, s, c);
-        vec2 q = m * p.yz;
-        p.y = q.x;
-        p.z = q.y;
-    } else if (type == 4) { // Bend Backward (Bend -Z)
-         float k = -0.2;
-         float c = cos(k*p.y);
-         float s = sin(k*p.y);
-         mat2 m = mat2(c, -s, s, c);
-         vec2 q = m * p.yz;
-         p.y = q.x;
-         p.z = q.y;
-    }
-    return p;
-}
+const sdCappedCylinder = Fn( ( [ p, h, r ] ) => {
+    const d = abs(vec2(length(p.xz), p.y)).sub(vec2(r, h.div(2.0)));
+    return min(max(d.x, d.y), 0.0).add(length(max(d, 0.0)));
+} );
 
-// --- SDF Primitives ---
-float sdSphere(vec3 p, float s) {
-    return length(p) - s;
-}
+// Capped Cone
+const sdCappedCone = Fn( ( [ p, h, r1, r2 ] ) => {
+    const q = vec2( length(p.xz), p.y );
+    const k1 = vec2(r2, h);
+    const k2 = vec2(r2.sub(r1), h.mul(2.0));
+    const ca = vec2(q.x.sub(min(q.x, If(q.y.lessThan(0.0), r1).Else(r2))), abs(q.y).sub(h));
+    const cb = q.sub(k1).add(k2.mul(clamp( dot(k1.sub(q), k2).div(dot(k2, k2)), 0.0, 1.0 )));
+    const s = If( cb.x.lessThan(0.0).and(ca.y.lessThan(0.0)), float(-1.0) ).Else( float(1.0) );
+    return s.mul(sqrt(min(dot(ca, ca), dot(cb, cb))));
+} );
 
-float sdRoundBox(vec3 p, vec3 b, float r) {
-    vec3 q = abs(p) - b;
-    return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
-}
+const calcEllipsoid = Fn( ( [ p, r ] ) => {
+    const k0 = length(p.div(r));
+    const k1 = length(p.div(r.mul(r)));
+    return k0.mul(k0.sub(1.0)).div(k1);
+} );
 
-float sdCapsule(vec3 p, float h, float r) {
-    p.y -= clamp(p.y, -h/2.0, h/2.0);
-    return length(p) - r;
-}
+// Deformation
+const opDeform = Fn( ( [ p, type ] ) => {
+    const pOut = vec3(p).toVar();
 
-float sdCappedCylinder(vec3 p, float h, float r) {
-    vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(r, h/2.0);
-    return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
-}
+    If( type.equal( 1 ), () => { // Taper Top
+        const k = float(0.3);
+        const f = float(1.0).sub( k.mul( clamp( pOut.y, 0.0, 2.0 ) ) );
+        const divF = max(0.1, f);
+        pOut.x.assign( pOut.x.div(divF) );
+        pOut.z.assign( pOut.z.div(divF) );
+    } ).ElseIf( type.equal( 2 ), () => { // Taper Bottom
+        const k = float(0.3);
+        const f = float(1.0).sub( k.mul( clamp( pOut.y.negate(), 0.0, 2.0 ) ) );
+        const divF = max(0.1, f);
+        pOut.x.assign( pOut.x.div(divF) );
+        pOut.z.assign( pOut.z.div(divF) );
+    } ).ElseIf( type.equal( 3 ), () => { // Bend Fwd (Bend +Z)
+        const k = float(0.2);
+        const c = cos(k.mul(pOut.y));
+        const s = sin(k.mul(pOut.y));
+        const oldY = pOut.y.toVar();
+        pOut.y.assign( c.mul(oldY).sub(s.mul(pOut.z)) );
+        pOut.z.assign( s.mul(oldY).add(c.mul(pOut.z)) );
+    } ).ElseIf( type.equal( 4 ), () => { // Bend Bwd (Bend -Z)
+         const k = float(-0.2);
+         const c = cos(k.mul(pOut.y));
+         const s = sin(k.mul(pOut.y));
+         const oldY = pOut.y.toVar();
+         pOut.y.assign( c.mul(oldY).sub(s.mul(pOut.z)) );
+         pOut.z.assign( s.mul(oldY).add(c.mul(pOut.z)) );
+    } );
 
-float sdCone(vec3 p, float h, float r) {
-    // Using CappedCone logic but simplified
-    return sdCappedCylinder(p, h, r); // Fallback to cylinder if needed, but lets use CappedCone below
-}
+    return pOut;
+} );
 
-float sdCappedCone(vec3 p, float h, float r1, float r2)
-{
-  vec2 q = vec2( length(p.xz), p.y );
-  vec2 k1 = vec2(r2,h);
-  vec2 k2 = vec2(r2-r1,2.0*h);
-  vec2 ca = vec2(q.x-min(q.x,(q.y<0.0)?r1:r2), abs(q.y)-h);
-  vec2 cb = q - k1 + k2*clamp( dot(k1-q,k2)/dot(k2,k2), 0.0, 1.0 );
-  float s = (cb.x<0.0 && ca.y<0.0) ? -1.0 : 1.0;
-  return s*sqrt( min(dot(ca,ca),dot(cb,cb)) );
-}
+// Map Function
+// Returns vec2(dist, matID)
+const mapWorld = Fn( ( [ p, shapeBuffer, shapeCount, globalSmoothness ] ) => {
+    const d = float(MAX_DIST).toVar();
+    const matID = float(0.0).toVar();
 
-float calcEllipsoid( vec3 p, vec3 r )
-{
-  float k0 = length(p/r);
-  float k1 = length(p/(r*r));
-  return k0*(k0-1.0)/k1;
-}
+    Loop( { start: 0, end: shapeCount, type: 'int' }, ( { i } ) => {
+        const idx = i.mul(STRIDE);
 
+        // Load Shape Data
+        // Chunk 0
+        const type = int( shapeBuffer.element( idx ) );
+        const op = int( shapeBuffer.element( idx.add(1) ) );
 
-// --- Map Function ---
-vec2 map(vec3 p) {
-    float d = MAX_DIST;
-    float matID = 0.0;
+        // Chunk 1
+        const pos = vec3(
+            shapeBuffer.element( idx.add(4) ),
+            shapeBuffer.element( idx.add(5) ),
+            shapeBuffer.element( idx.add(6) )
+        );
 
-    for (int i = 0; i < MAX_SHAPES; i++) {
-        if (i >= uShapeCount) break;
+        // Chunk 2
+        const rot = vec4(
+            shapeBuffer.element( idx.add(8) ),
+            shapeBuffer.element( idx.add(9) ),
+            shapeBuffer.element( idx.add(10) ),
+            shapeBuffer.element( idx.add(11) )
+        );
 
-        Shape s = uShapes[i];
+        // Chunk 3
+        const size = vec3(
+            shapeBuffer.element( idx.add(12) ),
+            shapeBuffer.element( idx.add(13) ),
+            shapeBuffer.element( idx.add(14) )
+        );
+        const blend = shapeBuffer.element( idx.add(15) );
 
-        // Transform point to local space
-        vec3 localP = inverseRotateVector(p - s.pos, s.rot);
+        // Chunk 4
+        // deformation is at idx + 19 (chunk 4 index 3) ? No, chunk 4 starts at 16.
+        // 16, 17, 18 (color), 19 (deformation)
+        const deformation = int( shapeBuffer.element( idx.add(19) ) );
 
-        // Apply Deformation
-        if (s.deformation > 0) {
-            localP = opDeform(localP, s.deformation);
-        }
+        // Transform Point
+        const localP = inverseRotateVector( p.sub(pos), rot ).toVar();
 
-        float dist = MAX_DIST;
+        // Deform
+        If( deformation.greaterThan(0), () => {
+            localP.assign( opDeform( localP, deformation ) );
+        } );
 
-        if (s.type == 0) { // RoundBox
-            dist = sdRoundBox(localP, s.size, 0.1); // Fixed roundness 0.1
-        } else if (s.type == 1) { // CappedCylinder
-            dist = sdCappedCylinder(localP, s.size.y, s.size.x);
-        } else if (s.type == 2) { // Sphere
-            dist = sdSphere(localP, s.size.x);
-        } else if (s.type == 3) { // Capsule
-            dist = sdCapsule(localP, s.size.y, s.size.x);
-        } else if (s.type == 4) { // Cone (using CappedCone with top radius 0)
-            dist = sdCappedCone(localP, s.size.y * 0.5, s.size.x, 0.0);
-        } else if (s.type == 5) { // Ellipsoid
-            dist = calcEllipsoid(localP, s.size);
-        }
+        const dist = float(MAX_DIST).toVar();
 
-        if (i == 0) {
-            d = dist;
-            matID = float(i);
-        } else {
-            // Operation
-            if (s.operation == 0) { // Smooth Union
-                float k = max(0.01, s.blend);
-                d = smin(d, dist, k);
-            } else if (s.operation == 1) { // Rigid Union (or Ball Joint)
-                d = min(d, dist);
-            } else if (s.operation == 2) { // Subtract
-                d = max(d, -dist);
-            }
-        }
-    }
+        If( type.equal(0), () => { // RoundBox
+            dist.assign( sdRoundBox( localP, size, float(0.1) ) );
+        } ).ElseIf( type.equal(1), () => { // CappedCylinder
+            dist.assign( sdCappedCylinder( localP, size.y, size.x ) );
+        } ).ElseIf( type.equal(2), () => { // Sphere
+            dist.assign( sdSphere( localP, size.x ) );
+        } ).ElseIf( type.equal(3), () => { // Capsule
+            dist.assign( sdCapsule( localP, size.y, size.x ) );
+        } ).ElseIf( type.equal(4), () => { // Cone
+             // sdCappedCone(localP, s.size.y * 0.5, s.size.x, 0.0);
+            dist.assign( sdCappedCone( localP, size.y.mul(0.5), size.x, float(0.0) ) );
+        } ).ElseIf( type.equal(5), () => { // Ellipsoid
+            dist.assign( calcEllipsoid( localP, size ) );
+        } );
+
+        If( i.equal(0), () => {
+            d.assign( dist );
+            matID.assign( float(i) );
+        } ).Else( () => {
+             If( op.equal(0), () => { // Smooth Union
+                 const k = max(0.01, blend);
+                 d.assign( smin(d, dist, k) );
+                 // Need logic to mix material IDs?
+                 // Simple raymarch usually just takes the closest, but for smooth blend it's tricky.
+                 // We will just keep the ID of the closest "hard" surface or last blend?
+                 // For now, let's just stick to d.
+                 // If dist < d (roughly), update matID?
+                 // But smin changes d.
+                 // Let's assume matID updates if dist < d (before blend)
+             } ).ElseIf( op.equal(1), () => { // Rigid Union
+                 d.assign( min(d, dist) );
+             } ).ElseIf( op.equal(2), () => { // Subtract
+                 d.assign( max(d, dist.negate()) );
+             } );
+
+             // Naive material ID update (closest wins)
+             // This doesn't handle smooth blend color mixing perfectly, but ok for now.
+             If( dist.lessThan(d.add(0.1)), () => { // Threshold
+                 // We'll calculate color later using weighted blend, so ID isn't critical
+                 // except for maybe debugging.
+                 // Actually calcColor re-loops.
+             });
+        } );
+
+    } );
 
     return vec2(d, matID);
-}
+} );
 
-// Compute Normal
-vec3 calcNormal(vec3 p) {
-    float d = map(p).x;
-    vec2 e = vec2(0.001, 0.0);
-    vec3 n = d - vec3(
-        map(p - e.xyy).x,
-        map(p - e.yxy).x,
-        map(p - e.yyx).x
-    );
+const calcNormal = Fn( ( [ p, shapeBuffer, shapeCount, globalSmoothness ] ) => {
+    const e = vec2(0.001, 0.0);
+    const d = mapWorld( p, shapeBuffer, shapeCount, globalSmoothness ).x;
+    const n = d.sub( vec3(
+        mapWorld( p.sub(e.xyy), shapeBuffer, shapeCount, globalSmoothness ).x,
+        mapWorld( p.sub(e.yxy), shapeBuffer, shapeCount, globalSmoothness ).x,
+        mapWorld( p.sub(e.yyx), shapeBuffer, shapeCount, globalSmoothness ).x
+    ) );
     return normalize(n);
-}
+} );
 
-// Get Color
-vec3 calcColor(vec3 p) {
-    // Weighted blend based on distance to shapes
-    vec3 totalColor = vec3(0.0);
-    float totalWeight = 0.0;
+const calcColor = Fn( ( [ p, shapeBuffer, shapeCount ] ) => {
+    const totalColor = vec3(0.0).toVar();
+    const totalWeight = float(0.0).toVar();
 
-    for (int i = 0; i < MAX_SHAPES; i++) {
-        if (i >= uShapeCount) break;
-        Shape s = uShapes[i];
+    Loop( { start: 0, end: shapeCount, type: 'int' }, ( { i } ) => {
+        const idx = i.mul(STRIDE);
 
-        // Only consider shapes that contribute to volume (not subtractors ideally, but simplified)
-        if (s.operation == 2) continue;
+        const type = int( shapeBuffer.element( idx ) );
+        const op = int( shapeBuffer.element( idx.add(1) ) );
 
-        vec3 localP = inverseRotateVector(p - s.pos, s.rot);
+        // Skip Subtract
+        If( op.notEqual(2), () => {
+             const pos = vec3(
+                shapeBuffer.element( idx.add(4) ),
+                shapeBuffer.element( idx.add(5) ),
+                shapeBuffer.element( idx.add(6) )
+            );
+            const rot = vec4(
+                shapeBuffer.element( idx.add(8) ),
+                shapeBuffer.element( idx.add(9) ),
+                shapeBuffer.element( idx.add(10) ),
+                shapeBuffer.element( idx.add(11) )
+            );
+            const size = vec3(
+                shapeBuffer.element( idx.add(12) ),
+                shapeBuffer.element( idx.add(13) ),
+                shapeBuffer.element( idx.add(14) )
+            );
+            const color = vec3(
+                shapeBuffer.element( idx.add(16) ),
+                shapeBuffer.element( idx.add(17) ),
+                shapeBuffer.element( idx.add(18) )
+            );
+            const deformation = int( shapeBuffer.element( idx.add(19) ) );
 
-        // Apply Deformation for color check too
-        if (s.deformation > 0) {
-            localP = opDeform(localP, s.deformation);
-        }
+            const localP = inverseRotateVector( p.sub(pos), rot ).toVar();
+            If( deformation.greaterThan(0), () => {
+                localP.assign( opDeform( localP, deformation ) );
+            } );
 
-        float dist = MAX_DIST;
+            const dist = float(MAX_DIST).toVar();
 
-        if (s.type == 0) dist = sdRoundBox(localP, s.size, 0.1);
-        else if (s.type == 1) dist = sdCappedCylinder(localP, s.size.y, s.size.x);
-        else if (s.type == 2) dist = sdSphere(localP, s.size.x);
-        else if (s.type == 3) dist = sdCapsule(localP, s.size.y, s.size.x);
-        else if (s.type == 4) dist = sdCappedCone(localP, s.size.y * 0.5, s.size.x, 0.0);
-        else if (s.type == 5) dist = calcEllipsoid(localP, s.size);
+            If( type.equal(0), () => { dist.assign( sdRoundBox( localP, size, float(0.1) ) ); } )
+            .ElseIf( type.equal(1), () => { dist.assign( sdCappedCylinder( localP, size.y, size.x ) ); } )
+            .ElseIf( type.equal(2), () => { dist.assign( sdSphere( localP, size.x ) ); } )
+            .ElseIf( type.equal(3), () => { dist.assign( sdCapsule( localP, size.y, size.x ) ); } )
+            .ElseIf( type.equal(4), () => { dist.assign( sdCappedCone( localP, size.y.mul(0.5), size.x, float(0.0) ) ); } )
+            .ElseIf( type.equal(5), () => { dist.assign( calcEllipsoid( localP, size ) ); } );
 
-        float w = 1.0 / (abs(dist) + 0.001);
-        w = pow(w, 4.0); // High sharpen to isolate colors
-        totalColor += s.color * w;
-        totalWeight += w;
-    }
-    return totalColor / max(totalWeight, 0.001);
-}
+            const w = float(1.0).div( abs(dist).add(0.001) );
+            const w4 = pow(w, 4.0);
+            totalColor.addAssign( color.mul(w4) );
+            totalWeight.addAssign( w4 );
+        } );
+    } );
 
-void main() {
-    vec3 ro = uCameraPos;
-    vec3 rd = normalize(vWorldPosition - ro);
+    return totalColor.div( max(totalWeight, 0.001) );
+} );
 
-    float t = 0.0;
-    float d = 0.0;
+// Main Raymarch Shader
+const raymarchShader = Fn( ( [ shapeBuffer, shapeCount, globalSmoothness ] ) => {
+    // Ray Origin/Direction
+    // Assuming Mesh is a Box containing camera
+    // Actually, simple setup:
+    const ro = cameraPosition;
+    const rd = normalize( positionWorld.sub( ro ) );
 
-    // Raymarching
-    for (int i = 0; i < MAX_STEPS; i++) {
-        vec3 p = ro + rd * t;
-        vec2 res = map(p);
-        d = res.x;
+    const t = float(0.0).toVar();
+    const d = float(0.0).toVar();
+    const hit = float(0.0).toVar();
 
-        if (d < SURF_DIST || t > MAX_DIST) break;
-        t += d;
-    }
+    Loop( { start: 0, end: MAX_STEPS, type: 'int' }, () => {
+        const p = ro.add( rd.mul(t) );
+        const res = mapWorld( p, shapeBuffer, shapeCount, globalSmoothness );
+        d.assign( res.x );
 
-    vec3 col = vec3(0.05); // Dark background
+        If( d.lessThan( SURF_DIST ), () => {
+            hit.assign( 1.0 );
+            Break();
+        } );
+        If( t.greaterThan( MAX_DIST ), () => {
+            Break();
+        } );
 
-    if (d < SURF_DIST) {
-        vec3 p = ro + rd * t;
-        vec3 n = calcNormal(p);
-        vec3 lightDir = normalize(uLightDir);
+        t.addAssign( d );
+    } );
 
-        // Lighting
-        float diff = max(dot(n, lightDir), 0.0);
+    const col = vec3(0.05).toVar(); // Background
 
-        // Rim light for edge definition
-        float rim = 1.0 - max(dot(n, -rd), 0.0);
-        rim = pow(rim, 3.0);
+    If( hit.greaterThan(0.5), () => {
+        const p = ro.add( rd.mul(t) );
+        const n = calcNormal( p, shapeBuffer, shapeCount, globalSmoothness );
+        const lightDir = normalize( vec3(0.5, 0.8, 0.5) );
 
-        float amb = 0.3;
+        const diff = max( dot(n, lightDir), 0.0 );
+        const rim = float(1.0).sub( max( dot(n, rd.negate()), 0.0 ) );
+        const rimPow = pow(rim, 3.0);
 
-        // Color
-        vec3 objCol = calcColor(p);
+        const amb = float(0.3);
+        const objCol = calcColor( p, shapeBuffer, shapeCount );
 
-        col = objCol * (diff + amb) + vec3(0.5)*rim*0.2;
+        col.assign( objCol.mul( diff.add(amb) ).add( vec3(0.5).mul(rimPow).mul(0.2) ) );
 
-        // Gamma correction
-        col = pow(col, vec3(0.4545));
-    } else {
-        discard;
-    }
+        // Gamma
+        col.assign( pow(col, vec3(0.4545)) );
+    } ).Else( () => {
+         // Discard or keep background
+         // discard(); // TSL discard?
+         // For now just background color
+    } );
 
-    gl_FragColor = vec4(col, 1.0);
-}
-`;
+    return vec4(col, 1.0);
+} );
+
 
 export class CreatureRenderer {
     constructor(scene) {
         this.scene = scene;
         this.mesh = null;
-        this.uniforms = {
-            uTime: { value: 0.0 },
-            uShapeCount: { value: 0 },
-            uShapes: { value: [] },
-            uCameraPos: { value: new THREE.Vector3() },
-            uLightDir: { value: new THREE.Vector3(0.5, 0.8, 0.5) },
-            uGlobalSmoothness: { value: 0.1 }
-        };
 
-        const shapes = [];
-        for (let i = 0; i < MAX_SHAPES; i++) {
-            shapes.push({
-                type: 0,
-                operation: 0,
-                pos: new THREE.Vector3(),
-                rot: new THREE.Vector4(0,0,0,1),
-                size: new THREE.Vector3(1,1,1),
-                color: new THREE.Vector3(0,1,0),
-                blend: 0.1,
-                deformation: 0
-            });
-        }
-        this.uniforms.uShapes.value = shapes;
+        // Storage Buffer
+        this.shapeArray = new Float32Array(MAX_SHAPES * STRIDE);
+        this.shapeAttribute = new StorageBufferAttribute(this.shapeArray, 1);
+        this.shapeBufferNode = storage( this.shapeAttribute, 'float', MAX_SHAPES * STRIDE );
+
+        this.uShapeCount = uniform(0); // int uniform
+        this.uGlobalSmoothness = uniform(0.1);
+
+        this.initMesh();
     }
 
-    clear() {
-        if (this.mesh) {
-            this.scene.remove(this.mesh);
-            this.mesh.geometry.dispose();
-            this.mesh.material.dispose();
-            this.mesh = null;
-        }
-    }
-
-    render(graphData) {
-        this.clear();
-
-        if (!graphData || !graphData.topology_graph) {
-            console.error("Invalid graph data for renderer");
-            return;
-        }
-
-        // 1. Process Graph to Flattened Shapes
-        const shapeList = this._processGraph(graphData);
-
-        // 2. Update Uniforms
-        const count = Math.min(shapeList.length, MAX_SHAPES);
-        this.uniforms.uShapeCount.value = count;
-
-        // Global smoothness override if needed, or per shape
-        const globalSmoothness = graphData.style_parameters?.smoothness || 0.1;
-        this.uniforms.uGlobalSmoothness.value = globalSmoothness;
-
-        for (let i = 0; i < count; i++) {
-            const s = shapeList[i];
-            const u = this.uniforms.uShapes.value[i];
-
-            u.type = s.type;
-            u.operation = s.operation;
-            u.pos.copy(s.pos);
-            u.rot.copy(s.rot);
-            u.size.copy(s.size);
-            u.color.copy(s.color);
-            u.blend = s.blend !== undefined ? s.blend : globalSmoothness;
-            u.deformation = s.deformation || 0;
-        }
-
-        // 3. Create Geometry
+    initMesh() {
         const geometry = new THREE.BoxGeometry(20, 20, 20);
-        const material = new THREE.ShaderMaterial({
-            vertexShader: vertexShader,
-            fragmentShader: fragmentShader,
-            uniforms: this.uniforms,
-            side: THREE.BackSide,
-            transparent: true
-        });
+
+        // Material
+        const material = new MeshBasicNodeMaterial();
+        material.side = THREE.BackSide;
+        material.transparent = true;
+
+        // Assign the color node
+        material.colorNode = raymarchShader( this.shapeBufferNode, this.uShapeCount, this.uGlobalSmoothness );
 
         this.mesh = new THREE.Mesh(geometry, material);
         this.mesh.position.set(0, 2, 0);
         this.scene.add(this.mesh);
     }
 
-    update(camera) {
-        if (this.mesh) {
-            this.uniforms.uCameraPos.value.copy(camera.position);
-            this.uniforms.uTime.value = performance.now() / 1000.0;
-        }
+    clear() {
+        this.uShapeCount.value = 0;
+        // We don't remove mesh, just set count to 0 so loop doesn't run (or runs 0 times)
     }
+
+    render(graphData) {
+        if (!graphData || !graphData.topology_graph) {
+            console.error("Invalid graph data for renderer");
+            return;
+        }
+
+        const shapeList = this._processGraph(graphData);
+        const count = Math.min(shapeList.length, MAX_SHAPES);
+
+        this.uShapeCount.value = count;
+        this.uGlobalSmoothness.value = graphData.style_parameters?.smoothness || 0.1;
+
+        // Update Buffer
+        for (let i = 0; i < count; i++) {
+            const s = shapeList[i];
+            const offset = i * STRIDE;
+
+            // Chunk 0
+            this.shapeArray[offset] = s.type;
+            this.shapeArray[offset + 1] = s.operation;
+            // +2, +3 padding
+
+            // Chunk 1
+            this.shapeArray[offset + 4] = s.pos.x;
+            this.shapeArray[offset + 5] = s.pos.y;
+            this.shapeArray[offset + 6] = s.pos.z;
+            // +7 padding
+
+            // Chunk 2
+            this.shapeArray[offset + 8] = s.rot.x;
+            this.shapeArray[offset + 9] = s.rot.y;
+            this.shapeArray[offset + 10] = s.rot.z;
+            this.shapeArray[offset + 11] = s.rot.w;
+
+            // Chunk 3
+            this.shapeArray[offset + 12] = s.size.x;
+            this.shapeArray[offset + 13] = s.size.y;
+            this.shapeArray[offset + 14] = s.size.z;
+            this.shapeArray[offset + 15] = s.blend;
+
+            // Chunk 4
+            this.shapeArray[offset + 16] = s.color.x;
+            this.shapeArray[offset + 17] = s.color.y;
+            this.shapeArray[offset + 18] = s.color.z;
+            this.shapeArray[offset + 19] = s.deformation;
+        }
+
+        this.shapeAttribute.needsUpdate = true;
+    }
+
+    update(camera) {
+        // TSL handles camera position automatically via `cameraPosition` node.
+        // Time? `timerLocal` can be used.
+        // If we needed manual uniforms, we'd update them here.
+    }
+
+    // ... _processGraph and _createShape methods remain largely the same,
+    // but we need to ensure they return data compatible with our new structure.
+    // I will copy them from the previous file and ensure they are correct.
 
     _processGraph(data) {
         const nodes = data.topology_graph.nodes;
@@ -379,7 +450,6 @@ export class CreatureRenderer {
         const primaryMaterial = style.primary_material || "organic_flesh";
         const globalSmoothness = style.smoothness || 0.1;
 
-        // Build Maps
         const nodeMap = new Map();
         const childrenMap = new Map();
 
@@ -393,12 +463,10 @@ export class CreatureRenderer {
 
         const resultShapes = [];
 
-        // Recursive function to compute world transforms
         const processNode = (nodeId, parentMatrix) => {
             const node = nodeMap.get(nodeId);
             if (!node) return;
 
-            // Handle Layout (Arrays)
             let layoutCount = 1;
             let layoutType = "none";
             let layoutAxis = "y";
@@ -406,24 +474,21 @@ export class CreatureRenderer {
 
             if (node.layout) {
                  if (typeof node.layout === 'object') {
-                     layoutCount = Math.max(1, Math.min(node.layout.count || 1, 20)); // Limit to 20 per node
+                     layoutCount = Math.max(1, Math.min(node.layout.count || 1, 20));
                      layoutType = node.layout.type || "none";
                      layoutAxis = node.layout.axis || "y";
                      layoutSpread = node.layout.spread || 0;
                  }
             }
 
-            // If layoutType is none, count is 1
             if (layoutType === "none") layoutCount = 1;
 
-            // Iterate instances
             for (let i = 0; i < layoutCount; i++) {
 
                 const localMatrix = new THREE.Matrix4();
                 const basePos = new THREE.Vector3(...node.relative_pos);
 
                 if (layoutType === "radial" && layoutCount > 1) {
-                    // Centered Spread: -spread/2 to +spread/2
                     const spreadRad = layoutSpread * (Math.PI / 180);
                     const startAngle = -spreadRad / 2;
                     const step = spreadRad / (layoutCount - 1);
@@ -434,15 +499,12 @@ export class CreatureRenderer {
                     else if (layoutAxis === 'z') axisVec.set(0, 0, 1);
                     else axisVec.set(0, 1, 0);
 
-                    // Order: Rotate then Translate (Orbit)
-                    // R * T
                     const rotMat = new THREE.Matrix4().makeRotationAxis(axisVec, angle);
                     const transMat = new THREE.Matrix4().makeTranslation(basePos.x, basePos.y, basePos.z);
 
                     localMatrix.multiplyMatrices(rotMat, transMat);
 
                 } else if (layoutType === "linear" && layoutCount > 1) {
-                    // Centered Linear Spread
                     const startOffset = -layoutSpread / 2;
                     const step = layoutSpread / (layoutCount - 1);
                     const offset = startOffset + i * step;
@@ -456,11 +518,9 @@ export class CreatureRenderer {
                     localMatrix.makeTranslation(finalPos.x, finalPos.y, finalPos.z);
 
                 } else {
-                    // Default / Single
                     localMatrix.makeTranslation(basePos.x, basePos.y, basePos.z);
                 }
 
-                // World Matrix
                 const worldMatrix = new THREE.Matrix4();
                 if (parentMatrix) {
                     worldMatrix.multiplyMatrices(parentMatrix, localMatrix);
@@ -468,7 +528,6 @@ export class CreatureRenderer {
                     worldMatrix.copy(localMatrix);
                 }
 
-                // Extract and Create Shape
                 const worldPos = new THREE.Vector3();
                 const worldQuat = new THREE.Quaternion();
                 const worldScale = new THREE.Vector3();
@@ -478,19 +537,13 @@ export class CreatureRenderer {
                 const shape = this._createShape(node, worldPos, worldQuat, primaryMaterial, globalSmoothness);
                 resultShapes.push(shape);
 
-                // Symmetry
                 if (node.symmetry_pair && !nodeMap.has(node.symmetry_pair)) {
-                    // Mirror across X axis of the ROOT
                     const mirrorPos = new THREE.Vector3(-worldPos.x, worldPos.y, worldPos.z);
-                    // Mirror quaternion: (x, -y, -z, w) for X-mirror
                     const mirrorQuat = new THREE.Quaternion(worldQuat.x, -worldQuat.y, -worldQuat.z, worldQuat.w);
-
                     const mirrorShape = this._createShape(node, mirrorPos, mirrorQuat, primaryMaterial, globalSmoothness);
                     resultShapes.push(mirrorShape);
                 }
 
-                // Children
-                // Pass worldMatrix of THIS instance
                 const children = childrenMap.get(nodeId);
                 if (children) {
                     children.forEach(childId => processNode(childId, worldMatrix));
@@ -498,15 +551,12 @@ export class CreatureRenderer {
             }
         };
 
-        // Start at root
         processNode(rootId, new THREE.Matrix4());
 
         return resultShapes;
     }
 
     _createShape(node, pos, rot, primaryMaterial, defaultSmoothness) {
-        // Map Primitives
-        // sdRoundBox, sdCappedCylinder, sdSphere, sdCapsule, sdCone
         let type = 0;
         if (node.sdf_primitive === "sdRoundBox") type = 0;
         else if (node.sdf_primitive === "sdCappedCylinder") type = 1;
@@ -515,31 +565,22 @@ export class CreatureRenderer {
         else if (node.sdf_primitive === "sdCone") type = 4;
         else if (node.sdf_primitive === "sdEllipsoid") type = 5;
 
-        // Map Connection Type
-        // smooth_union, rigid_union, ball_joint, subtract
         let op = 0;
         if (node.connection_type === "smooth_union") op = 0;
         else if (node.connection_type === "rigid_union") op = 1;
-        else if (node.connection_type === "ball_joint") op = 1; // Treat as rigid
+        else if (node.connection_type === "ball_joint") op = 1;
         else if (node.connection_type === "subtract") op = 2;
 
-        // Deformation Mapping
         let deformation = 0;
         if (node.deformation === "taper_top") deformation = 1;
         else if (node.deformation === "taper_bottom") deformation = 2;
         else if (node.deformation === "bend_forward") deformation = 3;
         else if (node.deformation === "bend_backward") deformation = 4;
 
-        // Size & Orientation logic
-        // Input scale is assumed to be Full Dimensions / Diameter.
-        // SDFs usually expect Half-Extents / Radius.
         let rawScale = new THREE.Vector3(...node.scale).multiplyScalar(0.5);
-
         let finalRot = rot.clone();
         let finalSize = rawScale.clone();
 
-        // For Radial Primitives (Cylinder, Capsule, Cone), we must align the primitive's Y axis
-        // with the longest dimension of the requested scale, because the shader assumes Y-alignment.
         if (type === 1 || type === 3 || type === 4) {
             const x = rawScale.x;
             const y = rawScale.y;
@@ -547,45 +588,35 @@ export class CreatureRenderer {
 
             let maxAxis = 'y';
             let radius = Math.max(x, z);
-            let height = y * 2.0; // Full height
+            let height = y * 2.0;
 
             if (x > y && x > z) {
                 maxAxis = 'x';
                 radius = Math.max(y, z);
                 height = x * 2.0;
-                // Align Y to X: Rotate -90 deg around Z
                 const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), -Math.PI / 2);
                 finalRot.multiply(q);
             } else if (z > y && z > x) {
                 maxAxis = 'z';
                 radius = Math.max(x, y);
                 height = z * 2.0;
-                // Align Y to Z: Rotate 90 deg around X
                 const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
                 finalRot.multiply(q);
             } else {
-                // Y is dominant, no rotation needed
                 radius = Math.max(x, z);
                 height = y * 2.0;
             }
 
-            // Adjust dimensions based on primitive type
             finalSize.x = radius;
 
             if (type === 3) { // Capsule
-                // Shader expects stick length h. Total height = h + 2r.
-                // h = Total - 2r.
                 let stick = height - 2.0 * radius;
                 finalSize.y = Math.max(0.0, stick);
             } else {
-                // Cylinder, Cone: Shader expects full height (or handles it via half-height internally)
-                // For Cylinder in shader: sdCappedCylinder(p, h, r). h passed is s.size.y.
-                // Shader implementation of Cylinder uses h/2.0 for bounds, so h is FULL height.
                 finalSize.y = height;
             }
         }
 
-        // Color
         let color;
         if (node.color && Array.isArray(node.color) && node.color.length === 3) {
              color = new THREE.Vector3(...node.color);
@@ -606,27 +637,22 @@ export class CreatureRenderer {
     }
 
     _getColor(materialName, semanticRole) {
-        // Base palette based on material
         let col = new THREE.Vector3(0.5, 0.5, 0.5);
 
         if (materialName === "organic_flesh") col.set(0.8, 0.5, 0.4);
         else if (materialName === "chitin_shell") col.set(0.2, 0.15, 0.1);
         else if (materialName === "crystal") col.set(0.1, 0.8, 0.9);
-        else if (materialName === "lava_rock") col.set(0.1, 0.1, 0.1); // Dark
+        else if (materialName === "lava_rock") col.set(0.1, 0.1, 0.1);
         else if (materialName === "plant_matter") col.set(0.2, 0.6, 0.1);
         else if (materialName === "mechanical") col.set(0.6, 0.6, 0.7);
 
-        // Modifiers based on role
         if (semanticRole === "core") {
-            // slightly darker or richer
             col.multiplyScalar(0.9);
         } else if (semanticRole === "weapon") {
-            col.set(0.8, 0.1, 0.1); // Reddish for weapons
+            col.set(0.8, 0.1, 0.1);
         } else if (semanticRole === "ik_end_effector") {
-            // maybe darker feet
             col.multiplyScalar(0.7);
         } else if (semanticRole === "decoration") {
-            // brighter
             col.multiplyScalar(1.2);
         }
 
