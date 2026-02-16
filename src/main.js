@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { WebGPURenderer } from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LLM } from './llm.js';
 import { CreatureRenderer } from './renderer.js';
@@ -17,7 +18,6 @@ class App {
         this.creatureRenderer = null; // Initialized after scene
 
         this.init();
-        this.animate();
         this.setupUI();
 
         // Populate with random genes on startup
@@ -52,7 +52,7 @@ class App {
         this.camera.lookAt(0, 2, 0);
 
         // Renderer
-        this.renderer = new THREE.WebGLRenderer({ antialias: true });
+        this.renderer = new WebGPURenderer({ antialias: true });
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -83,6 +83,9 @@ class App {
 
         // Resize handler
         window.addEventListener('resize', () => this.onWindowResize(), false);
+
+        // Animation Loop
+        this.renderer.setAnimationLoop( this.animate.bind(this) );
     }
 
     onWindowResize() {
@@ -92,7 +95,6 @@ class App {
     }
 
     animate() {
-        requestAnimationFrame(() => this.animate());
         this.controls.update();
         if (this.creatureRenderer) {
             this.creatureRenderer.update(this.camera);
