@@ -124,6 +124,13 @@ const opDeform = Fn( ( [ p, type ] ) => {
          const oldY = pOut.y.toVar();
          pOut.y.assign( c.mul(oldY).sub(s.mul(pOut.z)) );
          pOut.z.assign( s.mul(oldY).add(c.mul(pOut.z)) );
+    } ).ElseIf( type.equal( 5 ), () => { // Twist
+         const k = float(1.0);
+         const c = cos(k.mul(pOut.y));
+         const s = sin(k.mul(pOut.y));
+         const oldX = pOut.x.toVar();
+         pOut.x.assign( c.mul(oldX).sub(s.mul(pOut.z)) );
+         pOut.z.assign( s.mul(oldX).add(c.mul(pOut.z)) );
     } );
 
     return pOut;
@@ -587,8 +594,13 @@ export class CreatureRenderer {
         else if (node.deformation === "taper_bottom") deformation = 2;
         else if (node.deformation === "bend_forward") deformation = 3;
         else if (node.deformation === "bend_backward") deformation = 4;
+        else if (node.deformation === "twist") deformation = 5;
 
         let rawScale = new THREE.Vector3(...node.scale).multiplyScalar(0.5);
+        // Safety clamp to prevent zero-scale errors (e.g. division by zero in ellipsoid)
+        rawScale.x = Math.max(0.001, rawScale.x);
+        rawScale.y = Math.max(0.001, rawScale.y);
+        rawScale.z = Math.max(0.001, rawScale.z);
         let finalRot = rot.clone();
         let finalSize = rawScale.clone();
 

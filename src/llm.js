@@ -132,16 +132,36 @@ ${schemaDefinition}
             console.log("LLM Raw Response Content:", content);
 
             // Robust JSON extraction
-            const firstBrace = content.indexOf('{');
-            const lastBrace = content.lastIndexOf('}');
-
             let jsonString = content;
-            if (firstBrace !== -1 && lastBrace !== -1) {
-                jsonString = content.substring(firstBrace, lastBrace + 1);
+
+            // 1. Try to find JSON inside Markdown code blocks first
+            const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+            if (codeBlockMatch) {
+                jsonString = codeBlockMatch[1];
+            } else {
+                // 2. Fallback to finding the first '{' and last '}'
+                const firstBrace = content.indexOf('{');
+                const lastBrace = content.lastIndexOf('}');
+                if (firstBrace !== -1 && lastBrace !== -1) {
+                    jsonString = content.substring(firstBrace, lastBrace + 1);
+                }
             }
 
-            const creatureData = JSON.parse(jsonString);
-            return creatureData;
+            try {
+                const creatureData = JSON.parse(jsonString);
+                return creatureData;
+            } catch (parseError) {
+                console.warn("Initial JSON parse failed, attempting cleanup...", parseError);
+                // 3. Cleanup: remove invalid control characters that might break JSON.parse
+                // but keep newlines/tabs which are valid in strings (though strictly control chars in JSON strings must be escaped)
+                // Actually, often the issue is Unescaped control characters.
+                const cleaned = jsonString.replace(/[\u0000-\u001F]+/g, (match) => {
+                   if (match === '\n' || match === '\r' || match === '\t') return match;
+                   return '';
+                });
+                const creatureData = JSON.parse(cleaned);
+                return creatureData;
+            }
 
         } catch (error) {
             console.error("LLM Generation Failed:", error);
